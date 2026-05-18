@@ -26,6 +26,12 @@ const CLIENT_TOKEN = 'weqwqewqeqwdcsccagdgs32132';
 // ═══════════════════════════════════════════════════════════════════
 
 import { loadPushVapid, isPushVapidReady } from './pushVapid';
+import {
+  SUBSCRIBE_SETTLE_MS,
+  bytesToB64u,
+  isDeadPushEndpoint,
+  subscribeWithRetry,
+} from './pushSubscribeShared';
 
 const ENABLED_STORAGE_KEY = 'proactive_push_enabled_v1';
 const LAST_WAKE_AT_KEY = 'proactive_push_last_wake_at_v1';
@@ -71,24 +77,10 @@ export function isPushConfigAvailable(): boolean {
 }
 
 // ---------- Web Push subscription helpers ----------
-
-/** Convert base64url string to Uint8Array (for VAPID applicationServerKey). */
-function b64uToBytes(b64u: string): Uint8Array {
-  const padded = b64u.replace(/-/g, '+').replace(/_/g, '/')
-    + '='.repeat((4 - (b64u.length % 4)) % 4);
-  const bin = atob(padded);
-  const out = new Uint8Array(bin.length);
-  for (let i = 0; i < bin.length; i++) out[i] = bin.charCodeAt(i);
-  return out;
-}
-
-function bytesToB64u(buf: ArrayBuffer | null): string {
-  if (!buf) return '';
-  const bytes = new Uint8Array(buf);
-  let bin = '';
-  for (let i = 0; i < bytes.length; i++) bin += String.fromCharCode(bytes[i]);
-  return btoa(bin).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
-}
+//
+// b64uToBytes / bytesToB64u / isDeadPushEndpoint / explainSubscribeError /
+// subscribeWithRetry / SUBSCRIBE_SETTLE_MS 全部从 pushSubscribeShared.ts 取,
+// 与 instantPushClient.ts 共用同一份实现.
 
 interface SubscriptionInfo {
   endpoint: string;
@@ -97,46 +89,11 @@ interface SubscriptionInfo {
 }
 
 /**
- * True if a subscription's endpoint is a Chrome-internal "permanently
- * removed" sentinel.  Browsers occasionally revoke subscriptions due to
- * long inactivity, abuse signals, or the site being visited too rarely;
- * `getSubscription()` then returns an object whose endpoint URL is
- * `https://permanently-removed.invalid/...`.  `.invalid` is an RFC 2606
- * reserved TLD that never resolves, so any push send would fail with a
- * generic upstream error (which Cloudflare Workers wraps as HTTP 530).
- *
- * Detect this and treat the subscription as dead — unsubscribe + re-create.
+ * 旧 API 名 — 调用方 (apps/Settings.tsx 等) 还在引用, 保留为薄包装.
+ * 实现在 pushSubscribeShared.ts 的 isDeadPushEndpoint.
  */
 export function isDeadSubscriptionEndpoint(endpoint: string | null | undefined): boolean {
-  if (!endpoint) return false;
-  return endpoint.includes('permanently-removed.invalid');
-}
-
-/**
- * Translate the browser's raw subscribe() rejection into a Chinese,
- * end-user-actionable hint.  The common cases on Android phones without
- * Google Play Services (or in third-party Chromium-based browsers that
- * advertise `PushManager` but route through FCM internally) are
- * `AbortError` / generic network errors when the FCM endpoint cannot be
- * reached.  We surface those distinctly so the user knows it's not a
- * permission issue.
- */
-function explainSubscribeError(e: any): string {
-  const name = e?.name || '';
-  const msg = e?.message || String(e || '未知错误');
-  if (name === 'NotAllowedError') {
-    return '浏览器拒绝创建订阅（NotAllowedError）——通常是站点权限被拦截或处于隐身模式';
-  }
-  if (name === 'NotSupportedError') {
-    return '当前浏览器不支持网页推送——常见于没装谷歌服务的国行安卓手机（小米/华为/OPPO/vivo 大多默认就没有），或者手机自带的精简浏览器。换 Chrome / Edge / Firefox 桌面版试试';
-  }
-  if (name === 'AbortError' || /push service|FCM|network/i.test(msg)) {
-    return '连不上推送服务器——这台设备的网页推送链路走不通。最常见两种情况：1) 国行安卓手机没装谷歌服务（小米/华为/OPPO/vivo 默认就没有），系统层面就推不了；2) 当前网络挡住了谷歌的推送服务器。建议：换台装了谷歌服务的设备，或者用电脑上的 Chrome / Edge / Firefox 试试';
-  }
-  if (name === 'InvalidStateError') {
-    return '订阅状态冲突（InvalidStateError）——可能旧订阅没清干净，再点一次"重置订阅"';
-  }
-  return `订阅创建失败（${name || 'Error'}：${msg}）`;
+  return isDeadPushEndpoint(endpoint);
 }
 
 interface SubscribeAttempt {
@@ -155,8 +112,10 @@ export async function getOrCreateSubscription(vapidPublicKey: string): Promise<S
   if (sub) {
     // Drop the existing sub if it's been zombified by the browser
     // (`permanently-removed.invalid` endpoint) — those can never deliver.
-    if (isDeadSubscriptionEndpoint(sub.endpoint)) {
+    if (isDeadPushEndpoint(sub.endpoint)) {
       try { await sub.unsubscribe(); } catch { /* ignore */ }
+      // 等浏览器清内部 removed 标记, 否则后面 subscribe() 又拿到死哨兵
+      await new Promise(r => setTimeout(r, SUBSCRIBE_SETTLE_MS));
       sub = null;
     }
   }
@@ -168,6 +127,7 @@ export async function getOrCreateSubscription(vapidPublicKey: string): Promise<S
       const existingKey = bytesToB64u(sub.options.applicationServerKey);
       if (existingKey && existingKey !== vapidPublicKey) {
         await sub.unsubscribe();
+        await new Promise(r => setTimeout(r, SUBSCRIBE_SETTLE_MS));
         sub = null;
       }
     } catch {
@@ -182,23 +142,9 @@ export async function getOrCreateSubscription(vapidPublicKey: string): Promise<S
     } else if (Notification.permission === 'denied') {
       return { sub: null, reason: '通知权限已被拒绝（请到浏览器站点设置里手动开启）' };
     }
-    try {
-      sub = await reg.pushManager.subscribe({
-        userVisibleOnly: true,
-        applicationServerKey: b64uToBytes(vapidPublicKey),
-      });
-    } catch (e) {
-      console.warn('[ProactivePush] pushManager.subscribe failed', e);
-      return { sub: null, reason: explainSubscribeError(e) };
-    }
-  }
-
-  // Final paranoia: subscribe() in some Chrome versions can also return a
-  // dead sentinel.  Fail loudly rather than ship a useless endpoint to D1.
-  if (isDeadSubscriptionEndpoint(sub.endpoint)) {
-    console.warn('[ProactivePush] subscribe() returned a dead sentinel endpoint; giving up');
-    try { await sub.unsubscribe(); } catch { /* ignore */ }
-    return { sub: null, reason: '浏览器返回的订阅地址是 permanently-removed.invalid（zombie endpoint），无法投递' };
+    const fresh = await subscribeWithRetry(reg, vapidPublicKey, '[ProactivePush]');
+    if (!fresh.sub) return { sub: null, reason: fresh.reason };
+    sub = fresh.sub;
   }
 
   const p256dh = bytesToB64u(sub.getKey('p256dh'));
@@ -466,6 +412,10 @@ export async function resetSubscription(): Promise<{ ok: boolean; reason?: strin
 
   if (oldSub) {
     try { await oldSub.unsubscribe(); } catch { /* ignore */ }
+    // 等浏览器清内部 PushMessagingAppIdentifier removed 标记; 不等的话紧接
+    // 着的 subscribe() 大概率又拿到 zombie sentinel, 进入 subscribeWithRetry
+    // 的重试链路也会多走一轮.
+    await new Promise(r => setTimeout(r, SUBSCRIBE_SETTLE_MS));
   }
 
   // ensureSubscribed will re-create from clean slate (permission, fresh

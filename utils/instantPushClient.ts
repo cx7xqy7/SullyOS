@@ -1,5 +1,11 @@
 import { InstantPushConfig, APIConfig } from '../types';
 import { loadPushVapid, isPushVapidReady } from './pushVapid';
+import {
+  SUBSCRIBE_SETTLE_MS,
+  bytesToB64u,
+  isDeadPushEndpoint,
+  subscribeWithRetry,
+} from './pushSubscribeShared';
 
 export const INSTANT_PUSH_CONFIG_KEY = 'instant_push_config_v1';
 
@@ -330,48 +336,9 @@ export function isInstantConfigReady(cfg?: InstantPushConfig): boolean {
 }
 
 // ── Web Push subscription helpers ─────────────────────────────────────────
-
-function b64uToBytes(b64u: string): Uint8Array<ArrayBuffer> {
-  const padded = b64u.replace(/-/g, '+').replace(/_/g, '/')
-    + '='.repeat((4 - (b64u.length % 4)) % 4);
-  const bin = atob(padded);
-  const buf = new ArrayBuffer(bin.length);
-  const out = new Uint8Array(buf);
-  for (let i = 0; i < bin.length; i++) out[i] = bin.charCodeAt(i);
-  return out;
-}
-
-function bytesToB64u(buf: ArrayBuffer | null | undefined): string {
-  if (!buf) return '';
-  const bytes = new Uint8Array(buf);
-  let bin = '';
-  for (let i = 0; i < bytes.length; i++) bin += String.fromCharCode(bytes[i]);
-  return btoa(bin).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
-}
-
-function isDeadEndpoint(endpoint: string | null | undefined): boolean {
-  if (!endpoint) return false;
-  return endpoint.includes('permanently-removed.invalid');
-}
-
-function explainSubscribeError(e: unknown): string {
-  const err = e as { name?: string; message?: string } | null;
-  const name = err?.name || '';
-  const msg = err?.message || String(e || '未知错误');
-  if (name === 'NotAllowedError') {
-    return '浏览器拒绝创建订阅（NotAllowedError）——通常是站点权限被拦截或处于隐身模式';
-  }
-  if (name === 'NotSupportedError') {
-    return '当前浏览器不支持网页推送——国行安卓或自带浏览器常见，换 Chrome / Edge / Firefox 桌面版试试';
-  }
-  if (name === 'AbortError' || /push service|FCM|network/i.test(msg)) {
-    return '连不上推送服务器——常见于无谷歌服务的国行安卓，或网络挡住了推送服务器，建议换装了谷歌服务的设备或桌面 Chrome 试试';
-  }
-  if (name === 'InvalidStateError') {
-    return '订阅状态冲突（InvalidStateError）——可能旧订阅没清干净，刷新页面后重试';
-  }
-  return `订阅创建失败（${name || 'Error'}：${msg}）`;
-}
+//
+// 与 proactivePushConfig 共用一份 race 处理 / encoding helpers, 实现在
+// pushSubscribeShared.ts.
 
 export async function getOrCreateInstantSubscription(
   vapidPublicKey?: string,
@@ -388,8 +355,10 @@ export async function getOrCreateInstantSubscription(
   const reg = await navigator.serviceWorker.ready;
   let sub = await reg.pushManager.getSubscription();
 
-  if (sub && isDeadEndpoint(sub.endpoint)) {
+  if (sub && isDeadPushEndpoint(sub.endpoint)) {
     try { await sub.unsubscribe(); } catch { /* ignore */ }
+    // 等浏览器清内部 removed 标记, 否则下面 subscribe() 又拿到死哨兵
+    await new Promise(r => setTimeout(r, SUBSCRIBE_SETTLE_MS));
     sub = null;
   }
 
@@ -399,6 +368,7 @@ export async function getOrCreateInstantSubscription(
       const existingKey = bytesToB64u(sub.options.applicationServerKey);
       if (existingKey && existingKey !== pub) {
         await sub.unsubscribe();
+        await new Promise(r => setTimeout(r, SUBSCRIBE_SETTLE_MS));
         sub = null;
       }
     } catch { /* fall through */ }
@@ -411,20 +381,9 @@ export async function getOrCreateInstantSubscription(
     } else if (Notification.permission === 'denied') {
       return { sub: null, reason: '通知权限已被拒绝（请到浏览器站点设置里手动开启）' };
     }
-    try {
-      sub = await reg.pushManager.subscribe({
-        userVisibleOnly: true,
-        applicationServerKey: b64uToBytes(pub),
-      });
-    } catch (e) {
-      console.warn('[InstantPush] pushManager.subscribe failed', e);
-      return { sub: null, reason: explainSubscribeError(e) };
-    }
-  }
-
-  if (isDeadEndpoint(sub.endpoint)) {
-    try { await sub.unsubscribe(); } catch { /* ignore */ }
-    return { sub: null, reason: '浏览器返回了 zombie endpoint（permanently-removed.invalid），无法投递' };
+    const fresh = await subscribeWithRetry(reg, pub, '[InstantPush]');
+    if (!fresh.sub) return { sub: null, reason: fresh.reason };
+    sub = fresh.sub;
   }
 
   const p256dh = bytesToB64u(sub.getKey('p256dh'));
