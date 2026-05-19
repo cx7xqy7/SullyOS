@@ -7,3 +7,20 @@ compatibility_date = "2026-01-01"
 #   VAPID_PRIVATE_KEY
 #   VAPID_EMAIL          # 可选；缺则默认 mailto:noreply@example.com
 #   AMSG_CLIENT_TOKEN    # 可选；裸跑也行
+
+# Phase 2 Round 2 (可选): D1 BlobStore — agentic loop + reasoning 场景下 push payload
+# p99 容易超 2.6 KB. 配上避免 500 PAYLOAD_TOO_LARGE; 90% 短文本场景不配也能跑.
+#
+# 部署:
+#   wrangler d1 create instant-blob-db
+#   wrangler d1 execute instant-blob-db --file=schema.sql
+#   把下面 database_id 填上, 然后取消注释整个 [[d1_databases]] 块.
+#
+# [[d1_databases]]
+# binding = "DB"
+# database_name = "instant-blob-db"
+# database_id = "REPLACE_WITH_YOUR_D1_ID"
+
+# BlobStore 的非破坏性 read 不删行 — 配了 DB 必须挂 cron sweeper 否则过期 row 无限堆.
+# [triggers]
+# crons = ["*/15 * * * *"]

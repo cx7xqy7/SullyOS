@@ -73,6 +73,30 @@ function buildReasoningPush(args) {
   if (args.metadata !== void 0) push.metadata = args.metadata;
   return push;
 }
+function buildToolRequestPush(args) {
+  requireField("ToolRequestPush", "messageType", args.messageType);
+  requireField("ToolRequestPush", "source", args.source);
+  requireField("ToolRequestPush", "messageId", args.messageId);
+  requireField("ToolRequestPush", "sessionId", args.sessionId);
+  if (!Array.isArray(args.toolCalls) || args.toolCalls.length === 0) {
+    throw new Error("[amsg-shared] ToolRequestPush: 'toolCalls' must be a non-empty array");
+  }
+  const push = {
+    messageKind: "tool_request",
+    messageType: args.messageType,
+    source: args.source,
+    messageId: args.messageId,
+    sessionId: args.sessionId,
+    timestamp: args.timestamp || (/* @__PURE__ */ new Date()).toISOString(),
+    toolCalls: args.toolCalls
+  };
+  if (args.title !== void 0) push.title = args.title;
+  if (args.contactName !== void 0) push.contactName = args.contactName;
+  if (args.message !== void 0) push.message = args.message;
+  if (args.messageSubtype !== void 0) push.messageSubtype = args.messageSubtype;
+  if (args.metadata !== void 0) push.metadata = args.metadata;
+  return push;
+}
 function buildErrorPush(args) {
   requireField("ErrorPush", "messageType", args.messageType);
   requireField("ErrorPush", "source", args.source);
@@ -1318,11 +1342,11 @@ function createInstantHandler(options) {
   const clientToken = options.clientToken ? String(options.clientToken) : "";
   const expectedClientTokenBytes = clientToken ? utf8(clientToken) : null;
   const corsHeaders = buildCorsHeaders(options.cors);
-  const onLLMOutput = typeof options.onLLMOutput === "function" ? options.onLLMOutput : null;
+  const onLLMOutput2 = typeof options.onLLMOutput === "function" ? options.onLLMOutput : null;
   const blobStore = options.blobStore || null;
   const maxLoopIterations = Number.isInteger(options.maxLoopIterations) && options.maxLoopIterations > 0 ? options.maxLoopIterations : 10;
   const autoEmitReasoning = options.autoEmitReasoning !== false;
-  if (onLLMOutput && options.splitPattern !== void 0) {
+  if (onLLMOutput2 && options.splitPattern !== void 0) {
     const warn = globalThis.console && globalThis.console.warn;
     if (typeof warn === "function") {
       warn("[amsg-instant] splitPattern is ignored when onLLMOutput is provided. Move splitting logic into your hook if needed.");
@@ -1378,7 +1402,7 @@ function createInstantHandler(options) {
       });
     }
     const isContinue = pathname === "/continue";
-    if (isContinue && !onLLMOutput) {
+    if (isContinue && !onLLMOutput2) {
       return respond(400, {
         success: false,
         error: {
@@ -1392,7 +1416,7 @@ function createInstantHandler(options) {
       validation = validateContinuePayload(payload, { maxLoopIterations });
     } else {
       validation = validateInstantPayload(payload, {
-        hookPath: !!onLLMOutput,
+        hookPath: !!onLLMOutput2,
         maxLoopIterations
       });
     }
@@ -1417,7 +1441,7 @@ function createInstantHandler(options) {
         vapid: options.vapid,
         fetch: options.fetch || globalThis.fetch,
         onEvent,
-        onLLMOutput,
+        onLLMOutput: onLLMOutput2,
         blobStore,
         maxLoopIterations,
         autoEmitReasoning,
@@ -1617,15 +1641,289 @@ function createCloudflareWorker(optionsBuilder) {
   };
 }
 
-// worker/instant-push/src/index.ts
-var src_default = createCloudflareWorker((env) => ({
-  vapid: {
-    email: env.VAPID_EMAIL || "mailto:noreply@example.com",
-    publicKey: env.VAPID_PUBLIC_KEY,
-    privateKey: env.VAPID_PRIVATE_KEY
+// node_modules/@rei-standard/amsg-instant/dist/blob/d1.mjs
+function createD1BlobStore(db, opts = {}) {
+  if (!db || typeof db.prepare !== "function") {
+    throw new TypeError("createD1BlobStore: db must be a D1 Database binding");
+  }
+  const table = sanitizeTable(opts.table);
+  const putSql = `INSERT INTO ${table}(key, body, expires_at) VALUES (?, ?, ?)`;
+  const readSql = `SELECT body FROM ${table} WHERE key = ? AND expires_at > ?`;
+  return {
+    async put(key, body, ttlSeconds) {
+      await db.prepare(putSql).bind(key, body, Date.now() + ttlSeconds * 1e3).run();
+    },
+    async read(key) {
+      const row = await db.prepare(readSql).bind(key, Date.now()).first();
+      if (!row) return null;
+      const body = (
+        /** @type {{ body?: unknown }} */
+        row.body
+      );
+      return typeof body === "string" ? body : null;
+    }
+  };
+}
+function sanitizeTable(value) {
+  if (value === void 0 || value === null || value === "") return "amsg_transient_blobs";
+  if (typeof value !== "string" || !/^[A-Za-z_][A-Za-z0-9_]*$/.test(value)) {
+    throw new TypeError(
+      "createD1BlobStore: opts.table must match /^[A-Za-z_][A-Za-z0-9_]*$/"
+    );
+  }
+  return value;
+}
+
+// worker/instant-push/src/classifier.ts
+var DATA_TAGS = [
+  // [[RECALL: 2024-05]] / [[RECALL: 2024年5]]
+  {
+    re: /\[\[RECALL:\s*(\d{4})[-/年](\d{1,2})\]\]/g,
+    toolName: "recall",
+    toArgs: (m) => ({ year: m[1], month: m[2].padStart(2, "0") })
   },
-  clientToken: env.AMSG_CLIENT_TOKEN
-}));
+  // [[SEARCH: query]]
+  {
+    re: /\[\[SEARCH:\s*(.+?)\]\]/g,
+    toolName: "web_search",
+    toArgs: (m) => ({ query: m[1].trim() })
+  },
+  // [[READ_DIARY: 2024-05-19]] / [[READ_DIARY: 今天]]
+  {
+    re: /\[\[READ_DIARY:\s*(.+?)\]\]/g,
+    toolName: "notion_read_diary",
+    toArgs: (m) => ({ date: m[1].trim() })
+  },
+  // [[FS_READ_DIARY: 2024-05-19]]
+  {
+    re: /\[\[FS_READ_DIARY:\s*(.+?)\]\]/g,
+    toolName: "feishu_read_diary",
+    toArgs: (m) => ({ date: m[1].trim() })
+  },
+  // [[READ_NOTE: keyword]]
+  {
+    re: /\[\[READ_NOTE:\s*(.+?)\]\]/g,
+    toolName: "read_note",
+    toArgs: (m) => ({ keyword: m[1].trim() })
+  },
+  // [[XHS_SEARCH: keyword]]
+  {
+    re: /\[\[XHS_SEARCH:\s*(.+?)\]\]/g,
+    toolName: "xhs_search",
+    toArgs: (m) => ({ keyword: m[1].trim() })
+  },
+  // [[XHS_BROWSE]] / [[XHS_BROWSE: category]]
+  {
+    re: /\[\[XHS_BROWSE(?::\s*(.+?))?\]\]/g,
+    toolName: "xhs_browse",
+    toArgs: (m) => m[1] ? { category: m[1].trim() } : {}
+  },
+  // [[XHS_DETAIL: noteId]]
+  {
+    re: /\[\[XHS_DETAIL:\s*(.+?)\]\]/g,
+    toolName: "xhs_detail",
+    toArgs: (m) => ({ noteId: m[1].trim() })
+  },
+  // [[XHS_MY_PROFILE]]
+  {
+    re: /\[\[XHS_MY_PROFILE\]\]/g,
+    toolName: "xhs_my_profile",
+    toArgs: () => ({})
+  }
+];
+var SIDE_EFFECT_TAGS = [
+  // [[ACTION:POKE]]
+  {
+    re: /\[\[ACTION:POKE\]\]/g,
+    toDirective: () => ({ type: "poke" })
+  },
+  // [[ACTION:TRANSFER:123]]
+  {
+    re: /\[\[ACTION:TRANSFER:(\d+)\]\]/g,
+    toDirective: (m) => ({ type: "transfer", amount: Number(m[1]) })
+  },
+  // [[ACTION:ADD_EVENT|title|date]]
+  {
+    re: /\[\[ACTION:ADD_EVENT\s*\|\s*(.*?)\s*\|\s*(.*?)\]\]/g,
+    toDirective: (m) => ({ type: "add_event", title: m[1], date: m[2] })
+  },
+  // [schedule_message | time | fixed | text]  (note: 单方括号, 跟原 chatParser 一致)
+  {
+    re: /\[schedule_message\s*\|\s*(.+?)\s*\|\s*fixed\s*\|\s*(.+?)\]/g,
+    toDirective: (m) => ({ type: "schedule_message", time: m[1], text: m[2] })
+  },
+  // [[MUSIC_ACTION:verb]] 或 [[MUSIC_ACTION:verb|arg1|arg2]]
+  {
+    re: /\[\[MUSIC_ACTION:(join|add|add_new|join_and_add|join_and_add_new)(?:\|([^\]]*))?\]\]/g,
+    toDirective: (m) => ({
+      type: "music_action",
+      verb: m[1],
+      args: m[2] ? m[2].split("|").map((s) => s.trim()) : []
+    })
+  },
+  // [[XHS_LIKE: noteId]]
+  {
+    re: /\[\[XHS_LIKE:\s*(.+?)\]\]/g,
+    toDirective: (m) => ({ type: "xhs_like", noteId: m[1].trim() })
+  },
+  // [[XHS_FAV: noteId]]
+  {
+    re: /\[\[XHS_FAV:\s*(.+?)\]\]/g,
+    toDirective: (m) => ({ type: "xhs_fav", noteId: m[1].trim() })
+  },
+  // [[XHS_COMMENT: noteId | text]]
+  {
+    re: /\[\[XHS_COMMENT:\s*([^|]+?)\s*\|\s*([^\]]+?)\]\]/g,
+    toDirective: (m) => ({ type: "xhs_comment", noteId: m[1].trim(), text: m[2].trim() })
+  },
+  // [[XHS_REPLY: noteId | commentId | text]]
+  {
+    re: /\[\[XHS_REPLY:\s*([^|]+?)\s*\|\s*([^|]+?)\s*\|\s*([^\]]+?)\]\]/g,
+    toDirective: (m) => ({
+      type: "xhs_reply",
+      noteId: m[1].trim(),
+      commentId: m[2].trim(),
+      text: m[3].trim()
+    })
+  },
+  // [[XHS_POST: title | content | tags]]   (用 s flag 兼容多行 content)
+  {
+    re: /\[\[XHS_POST:\s*([^|]+?)\s*\|\s*([\s\S]+?)\s*\|\s*([^\]]+?)\]\]/g,
+    toDirective: (m) => ({
+      type: "xhs_post",
+      title: m[1].trim(),
+      content: m[2].trim(),
+      tags: m[3].trim()
+    })
+  },
+  // [[XHS_SHARE: 3]]
+  {
+    re: /\[\[XHS_SHARE:\s*(\d+)\]\]/g,
+    toDirective: (m) => ({ type: "xhs_share", idx: Number(m[1]) })
+  }
+];
+function classifyLLMOutput(text) {
+  const toolCalls = [];
+  for (const spec of DATA_TAGS) {
+    const matches = Array.from(text.matchAll(spec.re));
+    for (const m of matches) {
+      const args = spec.toArgs(m);
+      if (!args) continue;
+      toolCalls.push({
+        id: `call_${spec.toolName}_${toolCalls.length}_${Date.now().toString(36)}`,
+        type: "function",
+        function: { name: spec.toolName, arguments: JSON.stringify(args) }
+      });
+    }
+  }
+  if (toolCalls.length > 0) {
+    let prefix = text;
+    for (const spec of DATA_TAGS) prefix = prefix.replace(spec.re, "");
+    prefix = prefix.trim();
+    return { kind: "tool-request", prefix, toolCalls };
+  }
+  const directives = [];
+  for (const spec of SIDE_EFFECT_TAGS) {
+    const matches = Array.from(text.matchAll(spec.re));
+    for (const m of matches) {
+      const d = spec.toDirective(m);
+      if (d) directives.push(d);
+    }
+  }
+  let cleanedText = text;
+  for (const spec of DATA_TAGS) cleanedText = cleanedText.replace(spec.re, "");
+  for (const spec of SIDE_EFFECT_TAGS) cleanedText = cleanedText.replace(spec.re, "");
+  cleanedText = cleanedText.trim();
+  return { kind: "finish", cleanedText, directives };
+}
+
+// worker/instant-push/src/index.ts
+var cfWorker = createCloudflareWorker((env) => {
+  const blobStore = env.DB ? {
+    adapter: createD1BlobStore(env.DB, { table: "amsg_transient_blobs" })
+    // 用默认 2600 B / 60 s; 见 amsg-instant README §BlobStore.
+  } : void 0;
+  return {
+    vapid: {
+      email: env.VAPID_EMAIL || "mailto:noreply@example.com",
+      publicKey: env.VAPID_PUBLIC_KEY,
+      privateKey: env.VAPID_PRIVATE_KEY
+    },
+    clientToken: env.AMSG_CLIENT_TOKEN,
+    blobStore,
+    maxLoopIterations: 10,
+    onLLMOutput,
+    onEvent: (e) => {
+      if (e.type === "hook_threw" || e.type === "loop_exceeded" || e.type === "llm_call_failed" || e.type === "blob_put_failed" || e.type === "payload_too_large") {
+        console.error("[instant-push]", e);
+      }
+    }
+  };
+});
+var src_default = {
+  fetch: cfWorker.fetch,
+  async scheduled(_event, env) {
+    if (!env.DB) return;
+    try {
+      await env.DB.prepare("DELETE FROM amsg_transient_blobs WHERE expires_at < ?").bind(Date.now()).run();
+    } catch (e) {
+      console.error("[instant-push] blob sweeper failed", e);
+    }
+  }
+};
+async function onLLMOutput(ctx) {
+  const text = String(ctx.llmOutputText ?? "");
+  const sessionId = ctx.sessionId;
+  const iteration = Number(ctx.iteration ?? 0);
+  const contactName = ctx.contactName ?? "";
+  const avatarUrl = ctx.avatarUrl ?? null;
+  const callerMetadata = ctx.metadata && typeof ctx.metadata === "object" ? ctx.metadata : {};
+  const result = classifyLLMOutput(text);
+  const messageId = `msg_${sessionId}_${iteration}`;
+  const baseCommon = {
+    messageType: MESSAGE_TYPE.INSTANT,
+    source: PUSH_SOURCE.INSTANT,
+    messageId,
+    sessionId,
+    contactName,
+    avatarUrl
+  };
+  if (result.kind === "tool-request") {
+    return {
+      decision: "tool-request",
+      pushPayload: buildToolRequestPush({
+        ...baseCommon,
+        toolCalls: result.toolCalls,
+        // prefix 进 message 字段; SW tool_request 路由会把它写 inbox 让前置 narration 立刻显示.
+        // 可能为空串 (LLM 没说任何前置文本就直接吐数据标签), 那种情况下 SW 跳过 inbox 写入.
+        message: result.prefix,
+        metadata: {
+          ...callerMetadata,
+          // 客户端续跑时把 iteration + 1 重新发给 worker (见 amsg-instant /continue 契约).
+          iteration
+        }
+      })
+    };
+  }
+  return {
+    decision: "finish",
+    pushPayload: buildContentPush({
+      ...baseCommon,
+      message: result.cleanedText,
+      // 1 索引 + 1 总数: SullyOS 客户端不依赖 worker 端分句, 而是由 applyAssistantPostProcessing
+      // 在 client 端按用户 splitPattern 分句保存到 DB. 这里送整段文本, 单 ContentPush.
+      messageIndex: 1,
+      totalMessages: 1,
+      metadata: {
+        ...callerMetadata,
+        // directives = [] 时客户端 applyAssistantPostProcessing 仍走原文扫描路径 (兼容 worker
+        // 没分类成功 / 老 SW 落到本路径的场景). 非空时只重放, 不再扫.
+        directives: result.directives,
+        iteration
+      }
+    })
+  };
+}
 export {
   src_default as default
 };
