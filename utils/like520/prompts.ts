@@ -1131,8 +1131,9 @@ export async function runLike520CallA(
     console.log('[520][CallA] memory palace injection:\n', (char as any).memoryPalaceInjection || '(none)');
 
     const baseContext = ContextBuilder.buildCoreContext(char, userProfile, true);
+    const contextLimit = char.contextLimit || 500;
     const recentMsgs = recentMessages
-        .slice(-30)
+        .slice(-contextLimit)
         .map(m => `${m.role}: ${m.type === 'image' ? '[图片]' : m.content}`)
         .join('\n');
 
