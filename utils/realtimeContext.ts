@@ -561,8 +561,7 @@ export const RealtimeContextManager = {
                     const source = n.source ? `（${n.source}）` : '';
                     let line = `- ${n.title}${source}`;
                     if (n.desc && n.desc !== n.title) {
-                        const d = n.desc.length > 60 ? `${n.desc.slice(0, 60)}…` : n.desc;
-                        line += `：${d}`;
+                        line += `：${n.desc}`;
                     }
                     newsLines.push(line);
                 });
