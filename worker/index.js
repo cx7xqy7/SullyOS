@@ -1283,19 +1283,35 @@ const XHSLite = (() => {
     } catch (e) { /* ignore */ }
     return null;
   }
+  // 上传凭证：不同登录态/版本接口名不同，依次尝试，取第一个成功的
+  async function getUploadPermit(cookieStr, ck) {
+    const params = { biz_name: 'spectrum', scene: 'image', file_count: '1', version: '1', source: 'web' };
+    const candidates = [
+      { host: EDITH, path: '/api/media/v1/upload/web/permit', origin: WWW, referer: WWW + '/' },
+      { host: CREATOR, path: '/api/media/v1/upload/creator/permit', origin: CREATOR, referer: CREATOR + '/publish/publish' },
+      { host: EDITH, path: '/api/media/v1/upload/creator/permit', origin: CREATOR, referer: CREATOR + '/publish/publish' },
+      { host: CREATOR, path: '/api/media/v1/upload/web/permit', origin: WWW, referer: WWW + '/' },
+    ];
+    let lastErr = '';
+    for (const c of candidates) {
+      try {
+        const sig = signHeaders('GET', c.path, ck, { params });
+        const resp = await fetch(c.host + c.path + '?' + buildSignedQuery(params), { method: 'GET', headers: { ...baseHeaders(cookieStr), ...sig, origin: c.origin, referer: c.referer } });
+        const j = await resp.json().catch(() => ({}));
+        const permit = j?.data?.uploadTempPermits?.[0];
+        if (permit) return { permit, xt: sig['x-t'] };
+        lastErr = `${c.path}@${c.host.replace('https://', '')} -> ${JSON.stringify(j).slice(0, 120)}`;
+      } catch (e) { lastErr = `${c.path}: ${e.message}`; }
+    }
+    throw new Error('获取上传凭证失败（已试多种接口）: ' + lastErr);
+  }
   async function uploadImageFromUrl(cookieStr, ck, imgUrl) {
     const imgResp = await fetch(imgUrl);
     if (!imgResp.ok) throw new Error(`图片下载失败 ${imgResp.status}: ${imgUrl}`);
     const buf = new Uint8Array(await imgResp.arrayBuffer());
     const mime = imgResp.headers.get('content-type') || 'image/png';
     const { width, height } = imageSize(buf) || { width: 1080, height: 1080 };
-    const permitParams = { biz_name: 'spectrum', scene: 'image', file_count: '1', version: '1', source: 'web' };
-    const sig = signHeaders('GET', '/api/media/v1/upload/creator/permit', ck, { params: permitParams });
-    const permitResp = await fetch(CREATOR + '/api/media/v1/upload/creator/permit?' + buildSignedQuery(permitParams), { method: 'GET', headers: { ...baseHeaders(cookieStr), ...sig, referer: CREATOR + '/publish/publish' } });
-    const permitJson = await permitResp.json();
-    const permit = permitJson?.data?.uploadTempPermits?.[0];
-    if (!permit) throw new Error('获取上传凭证失败: ' + JSON.stringify(permitJson).slice(0, 200));
-    const xt = sig['x-t'];
+    const { permit, xt } = await getUploadPermit(cookieStr, ck);
     const fileIds = permit.fileIds[0].split('/').pop();
     const uploadAddr = permit.uploadAddr || 'ros-upload.xiaohongshu.com';
     const uploadHost = uploadAddr.replace(/^https?:\/\//, '');
