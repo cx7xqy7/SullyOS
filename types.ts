@@ -165,8 +165,16 @@ export interface InstantPushConfig {
   // 不改变 instant push 本身的开关含义. 关闭时 instant 模式也保留手动 ⚡, 跟本地模式一致.
   // 缺省 (undefined) 视为关闭 — 避免"启用 instant = 自动回复"的反直觉强绑定.
   autoTriggerOnSend?: boolean;
+  // 大 payload 的传输方式默认走 multipart。只有连接测试确认 Worker 绑定了可用 D1 后,
+  // 前台才允许用户打开 D1 envelope。
+  useD1BlobStore?: boolean;
+  d1Available?: boolean;
+  d1CheckedAt?: number;
+  d1CheckedWorkerUrl?: string;
   updatedAt?: number;
 }
+
+export type InstantOversizeTransport = 'multipart' | 'd1';
 
 export type ActiveMsg2DbDriver = 'pg' | 'neon';
 export type ActiveMsg2Mode = 'fixed' | 'auto' | 'prompted';

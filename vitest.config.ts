@@ -9,6 +9,6 @@ export default defineConfig({
       'worker/**/*.test.ts',
     ],
     // 排除 React 组件 / 浏览器集成测 (没装 jsdom)
-    exclude: ['node_modules', '.worktrees', 'dist'],
+    exclude: ['node_modules', '**/node_modules/**', '.worktrees', 'dist'],
   },
 });

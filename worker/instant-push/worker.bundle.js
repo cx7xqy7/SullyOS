@@ -2806,11 +2806,200 @@ function classifyLLMOutput(text) {
 }
 
 // worker/instant-push/src/index.ts
+var MULTIPART_TRANSPORT = { enabled: true };
+var UTILITY_CORS_HEADERS = {
+  "Access-Control-Allow-Origin": "*",
+  "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
+  "Access-Control-Allow-Headers": "Content-Type, Authorization, X-Client-Token",
+  "Access-Control-Max-Age": "86400"
+};
+var D1_BLOB_TABLE = "amsg_transient_blobs";
+var D1_CLEANUP_INTERVAL_MS = 15 * 60 * 1e3;
+var D1_CREATE_TABLE_SQL = `
+CREATE TABLE IF NOT EXISTS ${D1_BLOB_TABLE} (
+  key        TEXT    PRIMARY KEY,
+  body       TEXT    NOT NULL,
+  expires_at INTEGER NOT NULL
+)`;
+var D1_CREATE_EXPIRES_INDEX_SQL = `
+CREATE INDEX IF NOT EXISTS idx_amsg_blobs_expires
+  ON ${D1_BLOB_TABLE}(expires_at)`;
+var D1_DELETE_EXPIRED_SQL = `DELETE FROM ${D1_BLOB_TABLE} WHERE expires_at < ?`;
+var d1SchemaReadyPromise = null;
+var lastD1CleanupAt = 0;
+var d1CleanupPromise = null;
+var ERROR_EVENT_TYPES = /* @__PURE__ */ new Set([
+  "hook_threw",
+  "loop_exceeded",
+  "llm_call_failed",
+  "blob_put_failed",
+  "blob_orphaned",
+  "payload_too_large",
+  "multipart_too_large",
+  "multipart_too_many_chunks"
+]);
+function parseBooleanFlag(value) {
+  if (value == null) return null;
+  const normalized = value.trim().toLowerCase();
+  if (["1", "true", "yes", "on"].includes(normalized)) return true;
+  if (["0", "false", "no", "off"].includes(normalized)) return false;
+  return null;
+}
+function resolveOversizeTransport(env) {
+  const raw = (env.AMSG_OVERSIZE_TRANSPORT || "").trim().toLowerCase();
+  if (raw === "multipart") return "multipart";
+  if (raw === "d1" || raw === "blob" || raw === "blobstore") return "d1";
+  if (raw === "auto") return "auto";
+  const d1Flag = parseBooleanFlag(env.AMSG_ENABLE_D1_BLOBSTORE);
+  if (d1Flag === true) return "d1";
+  if (d1Flag === false) return "multipart";
+  if (raw) {
+    console.warn(`[instant-push] Unknown AMSG_OVERSIZE_TRANSPORT="${env.AMSG_OVERSIZE_TRANSPORT}", using multipart.`);
+  }
+  return "multipart";
+}
+function shouldUseD1BlobStore(env) {
+  const mode = resolveOversizeTransport(env);
+  return mode === "d1" || mode === "auto" && !!env.DB;
+}
+function resolveRequestOversizeTransport(body) {
+  const raw = String(body?.oversizeTransport || body?.amsgOversizeTransport || "").trim().toLowerCase();
+  if (raw === "multipart") return "multipart";
+  if (raw === "d1" || raw === "blob" || raw === "blobstore") return "d1";
+  if (raw === "auto") return "auto";
+  return null;
+}
+function withRequestOversizeTransport(env, body) {
+  const requested = resolveRequestOversizeTransport(body);
+  if (!requested) return env;
+  return {
+    ...env,
+    AMSG_OVERSIZE_TRANSPORT: requested,
+    AMSG_ENABLE_D1_BLOBSTORE: requested === "d1" ? "true" : requested === "multipart" ? "false" : env.AMSG_ENABLE_D1_BLOBSTORE
+  };
+}
+function forceMultipartTransport(env) {
+  return {
+    ...env,
+    AMSG_OVERSIZE_TRANSPORT: "multipart",
+    AMSG_ENABLE_D1_BLOBSTORE: "false"
+  };
+}
+async function ensureD1BlobSchema(env) {
+  if (!shouldUseD1BlobStore(env)) return false;
+  if (!env.DB) {
+    console.warn("[instant-push] D1 BlobStore requested but DB binding is missing; falling back to multipart.");
+    return false;
+  }
+  if (!d1SchemaReadyPromise) {
+    d1SchemaReadyPromise = (async () => {
+      await env.DB.prepare(D1_CREATE_TABLE_SQL).run();
+      await env.DB.prepare(D1_CREATE_EXPIRES_INDEX_SQL).run();
+      return true;
+    })().catch((e) => {
+      d1SchemaReadyPromise = null;
+      console.error("[instant-push] D1 BlobStore schema init failed; falling back to multipart.", e);
+      return false;
+    });
+  }
+  return d1SchemaReadyPromise;
+}
+async function probeD1BlobCapability(env) {
+  if (!env.DB) {
+    return { available: false, reason: "DB binding missing" };
+  }
+  const ready = await ensureD1BlobSchema({
+    ...env,
+    AMSG_OVERSIZE_TRANSPORT: "d1",
+    AMSG_ENABLE_D1_BLOBSTORE: "true"
+  });
+  return ready ? { available: true } : { available: false, reason: "D1 schema init failed" };
+}
+async function prepareBlobStoreEnv(env) {
+  if (!shouldUseD1BlobStore(env)) return env;
+  const ready = await ensureD1BlobSchema(env);
+  return ready ? env : forceMultipartTransport(env);
+}
 function createBlobStore(env) {
-  return env.DB ? {
-    adapter: createD1BlobStore(env.DB, { table: "amsg_transient_blobs" })
+  if (!shouldUseD1BlobStore(env)) return void 0;
+  if (!env.DB) {
+    console.warn("[instant-push] D1 BlobStore requested but DB binding is missing; falling back to multipart.");
+    return void 0;
+  }
+  return {
+    adapter: createD1BlobStore(env.DB, { table: D1_BLOB_TABLE })
     // 用默认 2600 B / 60 s; 见 amsg-instant README §BlobStore.
-  } : void 0;
+  };
+}
+async function cleanupExpiredD1Blobs(env) {
+  if (!shouldUseD1BlobStore(env) || !env.DB) return;
+  const ready = await ensureD1BlobSchema(env);
+  if (!ready) return;
+  if (d1CleanupPromise) return d1CleanupPromise;
+  d1CleanupPromise = (async () => {
+    await env.DB.prepare(D1_DELETE_EXPIRED_SQL).bind(Date.now()).run();
+  })().catch((e) => {
+    console.error("[instant-push] blob sweeper failed", e);
+  }).finally(() => {
+    d1CleanupPromise = null;
+  });
+  return d1CleanupPromise;
+}
+function scheduleD1BlobCleanup(env, ctx) {
+  if (!shouldUseD1BlobStore(env) || !env.DB) return;
+  const now = Date.now();
+  if (now - lastD1CleanupAt < D1_CLEANUP_INTERVAL_MS) return;
+  lastD1CleanupAt = now;
+  ctx.waitUntil(cleanupExpiredD1Blobs(env));
+}
+function utilityJson(status, body) {
+  return new Response(JSON.stringify(body), {
+    status,
+    headers: {
+      ...UTILITY_CORS_HEADERS,
+      "Content-Type": "application/json; charset=utf-8"
+    }
+  });
+}
+function verifyUtilityClientToken(request, env) {
+  const expected = (env.AMSG_CLIENT_TOKEN || "").trim();
+  if (!expected) return null;
+  const received = (request.headers.get("X-Client-Token") || "").trim();
+  if (!received) {
+    return utilityJson(401, {
+      success: false,
+      error: { code: "CLIENT_TOKEN_REQUIRED", message: "X-Client-Token required" }
+    });
+  }
+  if (received !== expected) {
+    return utilityJson(403, {
+      success: false,
+      error: { code: "CLIENT_TOKEN_INVALID", message: "X-Client-Token invalid" }
+    });
+  }
+  return null;
+}
+async function handleCapabilitiesRequest(request, env) {
+  if (request.method === "OPTIONS") {
+    return new Response(null, { status: 204, headers: UTILITY_CORS_HEADERS });
+  }
+  if (request.method !== "GET" && request.method !== "POST") {
+    return utilityJson(405, {
+      success: false,
+      error: { code: "METHOD_NOT_ALLOWED", message: "Use GET or POST" }
+    });
+  }
+  const tokenError = verifyUtilityClientToken(request, env);
+  if (tokenError) return tokenError;
+  const d1 = await probeD1BlobCapability(env);
+  return utilityJson(200, {
+    success: true,
+    data: {
+      multipart: { available: true },
+      d1,
+      defaultOversizeTransport: resolveOversizeTransport(env)
+    }
+  });
 }
 var cfWorker = createCloudflareWorker((env) => {
   return {
@@ -2821,10 +3010,11 @@ var cfWorker = createCloudflareWorker((env) => {
     },
     clientToken: env.AMSG_CLIENT_TOKEN,
     blobStore: createBlobStore(env),
+    multipart: MULTIPART_TRANSPORT,
     maxLoopIterations: 10,
     onLLMOutput,
     onEvent: (e) => {
-      if (e.type === "hook_threw" || e.type === "loop_exceeded" || e.type === "llm_call_failed" || e.type === "blob_put_failed" || e.type === "payload_too_large") {
+      if (ERROR_EVENT_TYPES.has(e.type)) {
         console.error("[instant-push]", e);
       }
     }
@@ -2891,16 +3081,18 @@ async function runEmotionEval(body, env, requestUrl) {
       timestamp: Date.now(),
       metadata: { charId, emotionRaw: raw }
     };
+    const pushEnv = await prepareBlobStoreEnv(env);
     await sendPushWithMaybeBlob2(pushObj, { pushSubscription: sub }, {
       vapid: {
-        email: env.VAPID_EMAIL || "mailto:noreply@example.com",
-        publicKey: env.VAPID_PUBLIC_KEY,
-        privateKey: env.VAPID_PRIVATE_KEY
+        email: pushEnv.VAPID_EMAIL || "mailto:noreply@example.com",
+        publicKey: pushEnv.VAPID_PUBLIC_KEY,
+        privateKey: pushEnv.VAPID_PRIVATE_KEY
       },
-      blobStore: createBlobStore(env),
+      blobStore: createBlobStore(pushEnv),
+      multipart: MULTIPART_TRANSPORT,
       requestUrl,
       onEvent: (e) => {
-        if (e.type === "payload_too_large" || e.type === "blob_put_failed" || e.type === "blob_orphaned") {
+        if (ERROR_EVENT_TYPES.has(e.type)) {
           console.error("[emotion-eval] push delivery event", e);
         }
       }
@@ -2911,24 +3103,27 @@ async function runEmotionEval(body, env, requestUrl) {
 }
 var src_default = {
   fetch: async (request, env, ctx) => {
+    const url = new URL(request.url);
+    if (url.pathname === "/capabilities" || url.pathname === "/health") {
+      return handleCapabilitiesRequest(request, env);
+    }
     let body = null;
     try {
       body = await request.clone().json();
     } catch {
       body = null;
     }
+    const requestedEnv = withRequestOversizeTransport(env, body);
+    const workerEnv = await prepareBlobStoreEnv(requestedEnv);
+    scheduleD1BlobCleanup(workerEnv, ctx);
     if (body?.emotionEval) {
-      ctx.waitUntil(runEmotionEval(body, env, request.url));
+      ctx.waitUntil(runEmotionEval(body, workerEnv, request.url));
     }
-    return await cfWorker.fetch(request, env, ctx);
+    return await cfWorker.fetch(request, workerEnv, ctx);
   },
   async scheduled(_event, env) {
-    if (!env.DB) return;
-    try {
-      await env.DB.prepare("DELETE FROM amsg_transient_blobs WHERE expires_at < ?").bind(Date.now()).run();
-    } catch (e) {
-      console.error("[instant-push] blob sweeper failed", e);
-    }
+    const workerEnv = await prepareBlobStoreEnv(env);
+    await cleanupExpiredD1Blobs(workerEnv);
   }
 };
 async function onLLMOutput(ctx) {

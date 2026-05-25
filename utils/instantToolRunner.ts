@@ -19,7 +19,13 @@
 import { ActiveMsgStore } from './activeMsgStore';
 import { DB } from './db';
 import { dispatchAgenticTool, type AgenticToolCtx } from './agenticTools';
-import { loadInstantConfig, isInstantConfigReady, getOrCreateInstantSubscription, byteLengthOf } from './instantPushClient';
+import {
+  loadInstantConfig,
+  isInstantConfigReady,
+  getOrCreateInstantSubscription,
+  byteLengthOf,
+  getInstantOversizeTransport,
+} from './instantPushClient';
 import { pushXhsCaches, pushLastXhsNotesRef } from './activeMsgRuntime';
 import type { APIConfig, RealtimeConfig, UserProfile, InstantPushPendingToolCall } from '../types';
 
@@ -171,6 +177,7 @@ async function runOnePendingToolCall(item: InstantPushPendingToolCall): Promise<
     charId: item.charId,
     metadata: { charId: item.charId, charName: char.name },
     temperature: 0.8,
+    oversizeTransport: getInstantOversizeTransport(cfg),
   });
 
   try {
@@ -245,4 +252,3 @@ function loadRealtimeConfigFromLocalStorage(): RealtimeConfig | undefined {
     return undefined;
   }
 }
-

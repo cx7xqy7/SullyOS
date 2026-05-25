@@ -7,6 +7,8 @@ import {
   saveInstantConfig,
   getOrCreateInstantSubscription,
   sendTestInstantPush,
+  probeInstantWorkerCapabilities,
+  normalizeWorkerUrl,
 } from '../../utils/instantPushClient';
 import { isPushVapidReady } from '../../utils/pushVapid';
 import { InstantPushConfig } from '../../types';
@@ -29,11 +31,18 @@ export const InstantPushSettingsModal: React.FC<InstantPushSettingsModalProps> =
   const [clientToken, setClientToken] = useState('');
   const [enabled, setEnabled] = useState(false);
   const [autoTriggerOnSend, setAutoTriggerOnSend] = useState(false);
+  const [useD1BlobStore, setUseD1BlobStore] = useState(false);
+  const [d1Available, setD1Available] = useState(false);
+  const [d1CheckedAt, setD1CheckedAt] = useState<number | undefined>(undefined);
+  const [d1CheckedWorkerUrl, setD1CheckedWorkerUrl] = useState('');
 
   const [vapidReady, setVapidReady] = useState(false);
 
   const [testStatus, setTestStatus] = useState('');
   const [testBusy, setTestBusy] = useState(false);
+  const [capabilityStatus, setCapabilityStatus] = useState('');
+  const [capabilityStatusKind, setCapabilityStatusKind] = useState<'idle' | 'loading' | 'success' | 'warning' | 'error'>('idle');
+  const [capabilityBusy, setCapabilityBusy] = useState(false);
   const [copyStatus, setCopyStatus] = useState('');
   const [gitUrlStatus, setGitUrlStatus] = useState('');
 
@@ -53,17 +62,47 @@ export const InstantPushSettingsModal: React.FC<InstantPushSettingsModalProps> =
     setClientToken(cfg.clientToken ?? '');
     setEnabled(cfg.enabled);
     setAutoTriggerOnSend(cfg.autoTriggerOnSend ?? false);
+    setUseD1BlobStore(!!cfg.useD1BlobStore && !!cfg.d1Available);
+    setD1Available(!!cfg.d1Available);
+    setD1CheckedAt(cfg.d1CheckedAt);
+    setD1CheckedWorkerUrl(cfg.d1CheckedWorkerUrl ?? normalizeWorkerUrl(cfg.workerUrl ?? '') ?? '');
     setVapidReady(isPushVapidReady());
     setTestStatus('');
+    setCapabilityStatus('');
+    setCapabilityStatusKind('idle');
     setCopyStatus('');
   }, [open]);
 
+  const normalizedWorkerUrl = normalizeWorkerUrl(workerUrl);
+  const canUseD1 = !!d1Available && !!normalizedWorkerUrl && d1CheckedWorkerUrl === normalizedWorkerUrl;
+
+  const resetD1State = () => {
+    setD1Available(false);
+    setUseD1BlobStore(false);
+    setD1CheckedAt(undefined);
+    setD1CheckedWorkerUrl('');
+  };
+
   const currentCfg = (): InstantPushConfig => ({
     enabled,
-    workerUrl: workerUrl.trim().replace(/\/+$/, ''),
+    workerUrl: normalizedWorkerUrl,
     clientToken: clientToken.trim() || undefined,
     autoTriggerOnSend,
+    useD1BlobStore: canUseD1 ? useD1BlobStore : false,
+    d1Available: canUseD1,
+    d1CheckedAt: canUseD1 ? d1CheckedAt : undefined,
+    d1CheckedWorkerUrl: canUseD1 ? d1CheckedWorkerUrl : undefined,
   });
+
+  const handleWorkerUrlChange = (value: string) => {
+    setWorkerUrl(value);
+    const nextUrl = normalizeWorkerUrl(value);
+    if (d1CheckedWorkerUrl && nextUrl !== d1CheckedWorkerUrl) {
+      resetD1State();
+      setCapabilityStatus('Worker 地址变了，需要重新检测 D1 能力');
+      setCapabilityStatusKind('warning');
+    }
+  };
 
   const handleGenerateToken = () => {
     setClientToken(generateClientToken());
@@ -98,6 +137,66 @@ export const InstantPushSettingsModal: React.FC<InstantPushSettingsModalProps> =
 
   const handleOpenCF = () => {
     window.open('https://dash.cloudflare.com/?to=/:account/workers-and-pages/create', '_blank');
+  };
+
+  const handleProbeCapabilities = async () => {
+    if (capabilityBusy) return;
+    const cfg = {
+      ...currentCfg(),
+      useD1BlobStore: false,
+      d1Available: false,
+      d1CheckedAt: undefined,
+      d1CheckedWorkerUrl: undefined,
+    };
+    setCapabilityBusy(true);
+    setCapabilityStatus('正在检测 Worker 连接…');
+    setCapabilityStatusKind('loading');
+    try {
+      const result = await probeInstantWorkerCapabilities(cfg);
+      const checkedAt = Date.now();
+      const checkedWorkerUrl = cfg.workerUrl;
+      if (!result.ok) {
+        const errorText = result.error === 'X-Client-Token required'
+          ? 'Worker 要求 Client Token'
+          : (result.error === 'X-Client-Token invalid' ? 'Client Token 不对' : result.error);
+        resetD1State();
+        setCapabilityStatus(`连接失败：${errorText ?? '未知错误'}`);
+        setCapabilityStatusKind('error');
+        saveInstantConfig({ ...cfg, d1Available: false, useD1BlobStore: false });
+        return;
+      }
+
+      if (result.d1Available) {
+        setD1Available(true);
+        setD1CheckedAt(checkedAt);
+        setD1CheckedWorkerUrl(checkedWorkerUrl);
+        setCapabilityStatus('连接正常，检测到 D1，可以启用 D1 envelope');
+        setCapabilityStatusKind('success');
+        saveInstantConfig({
+          ...cfg,
+          useD1BlobStore,
+          d1Available: true,
+          d1CheckedAt: checkedAt,
+          d1CheckedWorkerUrl: checkedWorkerUrl,
+        });
+      } else {
+        const reasonText = result.d1Reason === 'DB binding missing'
+          ? 'Worker 没有绑定 DB'
+          : (result.d1Reason === 'D1 schema init failed' ? 'D1 表初始化失败' : result.d1Reason);
+        resetD1State();
+        setCapabilityStatus(`连接正常，未检测到 D1：${reasonText ?? 'Worker 没有绑定 DB'}`);
+        setCapabilityStatusKind('warning');
+        saveInstantConfig({ ...cfg, d1Available: false, useD1BlobStore: false });
+      }
+    } catch (e) {
+      const err = e as { message?: string } | null;
+      resetD1State();
+      setCapabilityStatus(`检测失败：${err?.message ?? String(e)}`);
+      setCapabilityStatusKind('error');
+      saveInstantConfig({ ...cfg, d1Available: false, useD1BlobStore: false });
+    } finally {
+      setCapabilityBusy(false);
+    }
   };
 
   const handleTest = async () => {
@@ -203,7 +302,7 @@ export const InstantPushSettingsModal: React.FC<InstantPushSettingsModalProps> =
             <input
               type="url"
               value={workerUrl}
-              onChange={(e) => setWorkerUrl(e.target.value)}
+              onChange={(e) => handleWorkerUrlChange(e.target.value)}
               placeholder="https://instant-push.xxx.workers.dev"
               className="w-full text-xs bg-white border border-slate-200 rounded-xl px-3 py-2 focus:outline-none focus:border-indigo-400"
             />
@@ -253,6 +352,49 @@ export const InstantPushSettingsModal: React.FC<InstantPushSettingsModalProps> =
               </span>
             </span>
           </label>
+
+          <div className="border-t border-slate-200 pt-3 space-y-2">
+            <div className="flex items-start justify-between gap-3">
+              <div className="min-w-0">
+                <p className="text-[12px] text-slate-600 font-bold">D1 envelope</p>
+                <p className="text-[11px] text-slate-400 leading-relaxed">
+                  默认走分片；检测到 Worker 绑定了 D1 后，才允许把大包改成短 push + 拉完整包。
+                </p>
+              </div>
+              <button
+                type="button"
+                onClick={() => void handleProbeCapabilities()}
+                disabled={capabilityBusy || !normalizedWorkerUrl}
+                className={`shrink-0 px-3 py-2 text-[11px] rounded-xl font-bold ${capabilityBusy || !normalizedWorkerUrl ? 'bg-slate-100 text-slate-400' : 'bg-white border border-slate-200 text-slate-600 hover:bg-slate-50'}`}
+              >
+                {capabilityBusy ? '检测中…' : '检测连接'}
+              </button>
+            </div>
+
+            <label className={`flex items-start gap-2 ${canUseD1 ? 'cursor-pointer' : 'cursor-not-allowed opacity-60'}`}>
+              <input
+                type="checkbox"
+                checked={canUseD1 && useD1BlobStore}
+                disabled={!canUseD1}
+                onChange={(e) => setUseD1BlobStore(e.target.checked)}
+                className="accent-indigo-500 mt-0.5"
+              />
+              <span className="text-[12px] text-slate-600 font-medium leading-relaxed">
+                使用 D1 envelope 承接大 payload
+                <span className="block text-[11px] text-slate-400 font-normal">
+                  {canUseD1
+                    ? '已检测到可用 D1；关闭时继续使用默认分片。'
+                    : '先检测连接；没有 D1 时这个选项会保持关闭。'}
+                </span>
+              </span>
+            </label>
+
+            {capabilityStatus && (
+              <p className={`text-[11px] leading-relaxed ${capabilityStatusKind === 'error' || capabilityStatusKind === 'warning' ? 'text-amber-600' : capabilityStatusKind === 'success' ? 'text-emerald-600' : 'text-slate-500'}`}>
+                {capabilityStatus}
+              </p>
+            )}
+          </div>
         </div>
 
         {/* ② 部署 Worker */}

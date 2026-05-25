@@ -28,12 +28,13 @@ import { installReiSW } from '@rei-standard/amsg-sw';
  *           取出时排序拼接. savePendingToolCall 之前清空同 sessionId 的 reasoning
  *           buffer — 镜像主应用 `data = newResponse` 的"只保留最后一轮 reasoning"
  *           行为, 避免 agentic loop 跨轮污染.
- *  - 1.7.0: content push 在没有可见 client 时补一条系统通知 (notifyClosedClientForContent).
+ *  - 1.7.0: content push 在没有可见 client 时补一条系统通知（当时由应用层实现）。
  *           之前只有 tool_request 弹通知, content (含写日记的 directive 回复) 关浏览器 /
  *           后台冻结时零通知 — 用户不知道要回前台, inbox 不 flush, 客户端副作用 (写 Notion)
  *           永远不跑. 与 tool_request 同策略: 有可见 client 交给 in-app UI, 否则系统通知.
  *  - 1.9.0: 升级 amsg-sw 2.1.0-next.2，由插件接管 _multipart 透明重组。
  *           删除了应用层的 reasoning chunking 逻辑，现收到完整 reasoningContent。
+ *           content 通知兜底也交给 amsg-sw，应用层只负责写 inbox / tool / emotion。
  *           修复了在应用关闭期间收到分片推送丢失的问题（通过 notificationclick 恢复及前台拦截 REI_AMSG_PUSH）。
  */
 const SW_VERSION = '1.9.0';

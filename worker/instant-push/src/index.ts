@@ -6,8 +6,7 @@
  *  - 配置 onLLMOutput hook: SullyOS 业务标签分类器 (见 ./classifier.ts)
  *  - 数据标签 → tool-request push (客户端跑工具, POST /continue 续跑)
  *  - 副作用标签 → finish + metadata.directives (客户端重放)
- *  - reasoning_content 由 amsg-instant 自动 emit ReasoningPush, 我们不碰
- *  - 可选 D1 BlobStore: 部署时给 worker 加 `DB` binding 即启用, 否则 push 超 2.6KB 会 500
+ *  - 大 payload 默认走 amsg-instant generic multipart; 显式启用时才走 D1 BlobStore envelope.
  *
  * 入口仍是 createCloudflareWorker 工厂, env 在请求级注入 (secrets 在 wrangler.toml 外配置).
  */
@@ -31,29 +30,258 @@ export interface Env {
   VAPID_EMAIL?: string;
   AMSG_CLIENT_TOKEN?: string;
   /**
-   * 可选 D1 binding. 配了就启用 BlobStore — agentic loop + reasoning 场景下
-   * push payload p99 容易超 2.6 KB 安全线, 没 BlobStore 会 500 PAYLOAD_TOO_LARGE.
-   * 表结构见 worker/instant-push/schema.sql.
+   * 大 payload 传输策略:
+   * - unset / "multipart": 默认, 不依赖 D1, 超限时拆成 _multipart push.
+   * - "d1" / "blob" / "blobstore": 显式启用 D1 BlobStore envelope.
+   * - "auto": 有 DB binding 时用 D1, 否则 multipart.
+   */
+  AMSG_OVERSIZE_TRANSPORT?: string;
+  /** Back-compat boolean alias. true/1/on/yes => D1, false/0/off/no => multipart. */
+  AMSG_ENABLE_D1_BLOBSTORE?: string;
+  /**
+   * 可选 D1 binding. 仅在前台请求 D1, 或 AMSG_OVERSIZE_TRANSPORT=d1/blob/blobstore/auto 时启用.
+   * Worker 会自动初始化表结构并定期清理过期 blob row.
    */
   DB?: D1Database;
 }
 
 type D1Database = {
-  prepare(query: string): {
-    bind(...args: unknown[]): {
-      run(): Promise<unknown>;
-      first<T = unknown>(): Promise<T | null>;
-    };
-  };
+  prepare(query: string): D1PreparedStatement;
 };
 
+type D1PreparedStatement = {
+  bind(...args: unknown[]): D1PreparedStatement;
+  run(): Promise<unknown>;
+  first<T = unknown>(): Promise<T | null>;
+};
+
+type OversizeTransportMode = 'multipart' | 'd1' | 'auto';
+
+const MULTIPART_TRANSPORT = { enabled: true };
+const UTILITY_CORS_HEADERS = {
+  'Access-Control-Allow-Origin': '*',
+  'Access-Control-Allow-Methods': 'GET, POST, OPTIONS',
+  'Access-Control-Allow-Headers': 'Content-Type, Authorization, X-Client-Token',
+  'Access-Control-Max-Age': '86400',
+};
+const D1_BLOB_TABLE = 'amsg_transient_blobs';
+const D1_CLEANUP_INTERVAL_MS = 15 * 60 * 1000;
+const D1_CREATE_TABLE_SQL = `
+CREATE TABLE IF NOT EXISTS ${D1_BLOB_TABLE} (
+  key        TEXT    PRIMARY KEY,
+  body       TEXT    NOT NULL,
+  expires_at INTEGER NOT NULL
+)`;
+const D1_CREATE_EXPIRES_INDEX_SQL = `
+CREATE INDEX IF NOT EXISTS idx_amsg_blobs_expires
+  ON ${D1_BLOB_TABLE}(expires_at)`;
+const D1_DELETE_EXPIRED_SQL = `DELETE FROM ${D1_BLOB_TABLE} WHERE expires_at < ?`;
+
+let d1SchemaReadyPromise: Promise<boolean> | null = null;
+let lastD1CleanupAt = 0;
+let d1CleanupPromise: Promise<void> | null = null;
+
+/** Event types worth logging at error level — shared between cfWorker and emotion-eval handlers. */
+const ERROR_EVENT_TYPES = new Set([
+  'hook_threw',
+  'loop_exceeded',
+  'llm_call_failed',
+  'blob_put_failed',
+  'blob_orphaned',
+  'payload_too_large',
+  'multipart_too_large',
+  'multipart_too_many_chunks',
+]);
+
+function parseBooleanFlag(value: string | undefined): boolean | null {
+  if (value == null) return null;
+  const normalized = value.trim().toLowerCase();
+  if (['1', 'true', 'yes', 'on'].includes(normalized)) return true;
+  if (['0', 'false', 'no', 'off'].includes(normalized)) return false;
+  return null;
+}
+
+function resolveOversizeTransport(env: Env): OversizeTransportMode {
+  const raw = (env.AMSG_OVERSIZE_TRANSPORT || '').trim().toLowerCase();
+  if (raw === 'multipart') return 'multipart';
+  if (raw === 'd1' || raw === 'blob' || raw === 'blobstore') return 'd1';
+  if (raw === 'auto') return 'auto';
+
+  const d1Flag = parseBooleanFlag(env.AMSG_ENABLE_D1_BLOBSTORE);
+  if (d1Flag === true) return 'd1';
+  if (d1Flag === false) return 'multipart';
+
+  if (raw) {
+    console.warn(`[instant-push] Unknown AMSG_OVERSIZE_TRANSPORT="${env.AMSG_OVERSIZE_TRANSPORT}", using multipart.`);
+  }
+  return 'multipart';
+}
+
+function shouldUseD1BlobStore(env: Env): boolean {
+  const mode = resolveOversizeTransport(env);
+  return mode === 'd1' || (mode === 'auto' && !!env.DB);
+}
+
+function resolveRequestOversizeTransport(body: any): OversizeTransportMode | null {
+  const raw = String(body?.oversizeTransport || body?.amsgOversizeTransport || '').trim().toLowerCase();
+  if (raw === 'multipart') return 'multipart';
+  if (raw === 'd1' || raw === 'blob' || raw === 'blobstore') return 'd1';
+  if (raw === 'auto') return 'auto';
+  return null;
+}
+
+function withRequestOversizeTransport(env: Env, body: any): Env {
+  const requested = resolveRequestOversizeTransport(body);
+  if (!requested) return env;
+  return {
+    ...env,
+    AMSG_OVERSIZE_TRANSPORT: requested,
+    AMSG_ENABLE_D1_BLOBSTORE: requested === 'd1' ? 'true' : (requested === 'multipart' ? 'false' : env.AMSG_ENABLE_D1_BLOBSTORE),
+  };
+}
+
+function forceMultipartTransport(env: Env): Env {
+  return {
+    ...env,
+    AMSG_OVERSIZE_TRANSPORT: 'multipart',
+    AMSG_ENABLE_D1_BLOBSTORE: 'false',
+  };
+}
+
+async function ensureD1BlobSchema(env: Env): Promise<boolean> {
+  if (!shouldUseD1BlobStore(env)) return false;
+  if (!env.DB) {
+    console.warn('[instant-push] D1 BlobStore requested but DB binding is missing; falling back to multipart.');
+    return false;
+  }
+
+  if (!d1SchemaReadyPromise) {
+    d1SchemaReadyPromise = (async () => {
+      await env.DB!.prepare(D1_CREATE_TABLE_SQL).run();
+      await env.DB!.prepare(D1_CREATE_EXPIRES_INDEX_SQL).run();
+      return true;
+    })().catch((e) => {
+      d1SchemaReadyPromise = null;
+      console.error('[instant-push] D1 BlobStore schema init failed; falling back to multipart.', e);
+      return false;
+    });
+  }
+
+  return d1SchemaReadyPromise;
+}
+
+async function probeD1BlobCapability(env: Env): Promise<{ available: boolean; reason?: string }> {
+  if (!env.DB) {
+    return { available: false, reason: 'DB binding missing' };
+  }
+  const ready = await ensureD1BlobSchema({
+    ...env,
+    AMSG_OVERSIZE_TRANSPORT: 'd1',
+    AMSG_ENABLE_D1_BLOBSTORE: 'true',
+  });
+  return ready
+    ? { available: true }
+    : { available: false, reason: 'D1 schema init failed' };
+}
+
+async function prepareBlobStoreEnv(env: Env): Promise<Env> {
+  if (!shouldUseD1BlobStore(env)) return env;
+  const ready = await ensureD1BlobSchema(env);
+  return ready ? env : forceMultipartTransport(env);
+}
+
 function createBlobStore(env: Env) {
-  return env.DB
-    ? {
-        adapter: createD1BlobStore(env.DB, { table: 'amsg_transient_blobs' }),
-        // 用默认 2600 B / 60 s; 见 amsg-instant README §BlobStore.
-      }
-    : undefined;
+  if (!shouldUseD1BlobStore(env)) return undefined;
+  if (!env.DB) {
+    console.warn('[instant-push] D1 BlobStore requested but DB binding is missing; falling back to multipart.');
+    return undefined;
+  }
+  return {
+    adapter: createD1BlobStore(env.DB, { table: D1_BLOB_TABLE }),
+    // 用默认 2600 B / 60 s; 见 amsg-instant README §BlobStore.
+  };
+}
+
+async function cleanupExpiredD1Blobs(env: Env): Promise<void> {
+  if (!shouldUseD1BlobStore(env) || !env.DB) return;
+  const ready = await ensureD1BlobSchema(env);
+  if (!ready) return;
+
+  if (d1CleanupPromise) return d1CleanupPromise;
+  d1CleanupPromise = (async () => {
+    await env.DB!.prepare(D1_DELETE_EXPIRED_SQL)
+      .bind(Date.now())
+      .run();
+  })()
+    .catch((e) => {
+      console.error('[instant-push] blob sweeper failed', e);
+    })
+    .finally(() => {
+      d1CleanupPromise = null;
+    });
+
+  return d1CleanupPromise;
+}
+
+function scheduleD1BlobCleanup(env: Env, ctx: { waitUntil(p: Promise<unknown>): void }): void {
+  if (!shouldUseD1BlobStore(env) || !env.DB) return;
+  const now = Date.now();
+  if (now - lastD1CleanupAt < D1_CLEANUP_INTERVAL_MS) return;
+  lastD1CleanupAt = now;
+  ctx.waitUntil(cleanupExpiredD1Blobs(env));
+}
+
+function utilityJson(status: number, body: unknown): Response {
+  return new Response(JSON.stringify(body), {
+    status,
+    headers: {
+      ...UTILITY_CORS_HEADERS,
+      'Content-Type': 'application/json; charset=utf-8',
+    },
+  });
+}
+
+function verifyUtilityClientToken(request: Request, env: Env): Response | null {
+  const expected = (env.AMSG_CLIENT_TOKEN || '').trim();
+  if (!expected) return null;
+  const received = (request.headers.get('X-Client-Token') || '').trim();
+  if (!received) {
+    return utilityJson(401, {
+      success: false,
+      error: { code: 'CLIENT_TOKEN_REQUIRED', message: 'X-Client-Token required' },
+    });
+  }
+  if (received !== expected) {
+    return utilityJson(403, {
+      success: false,
+      error: { code: 'CLIENT_TOKEN_INVALID', message: 'X-Client-Token invalid' },
+    });
+  }
+  return null;
+}
+
+async function handleCapabilitiesRequest(request: Request, env: Env): Promise<Response> {
+  if (request.method === 'OPTIONS') {
+    return new Response(null, { status: 204, headers: UTILITY_CORS_HEADERS });
+  }
+  if (request.method !== 'GET' && request.method !== 'POST') {
+    return utilityJson(405, {
+      success: false,
+      error: { code: 'METHOD_NOT_ALLOWED', message: 'Use GET or POST' },
+    });
+  }
+  const tokenError = verifyUtilityClientToken(request, env);
+  if (tokenError) return tokenError;
+
+  const d1 = await probeD1BlobCapability(env);
+  return utilityJson(200, {
+    success: true,
+    data: {
+      multipart: { available: true },
+      d1,
+      defaultOversizeTransport: resolveOversizeTransport(env),
+    },
+  });
 }
 
 const cfWorker = createCloudflareWorker((env: Env) => {
@@ -65,17 +293,12 @@ const cfWorker = createCloudflareWorker((env: Env) => {
     },
     clientToken: env.AMSG_CLIENT_TOKEN,
     blobStore: createBlobStore(env),
+    multipart: MULTIPART_TRANSPORT,
     maxLoopIterations: 10,
     onLLMOutput,
     onEvent: (e: { type: string; [k: string]: unknown }) => {
-      // CF Workers logging — 只在异常分支打详细 log, 减少正常路径 stdout 噪音
-      if (
-        e.type === 'hook_threw'
-        || e.type === 'loop_exceeded'
-        || e.type === 'llm_call_failed'
-        || e.type === 'blob_put_failed'
-        || e.type === 'payload_too_large'
-      ) {
+      // CF Workers logging — only log error-class events to reduce normal-path stdout noise
+      if (ERROR_EVENT_TYPES.has(e.type)) {
         console.error('[instant-push]', e);
       }
     },
@@ -171,17 +394,20 @@ async function runEmotionEval(body: any, env: Env, requestUrl?: string): Promise
       metadata: { charId, emotionRaw: raw },
     };
 
-    // Reuse amsg's BlobStore path so large emotionRaw payloads do not exceed Web Push limits.
+    // Resolve D1 env after LLM call to avoid blocking LLM start with schema init.
+    const pushEnv = await prepareBlobStoreEnv(env);
+    // Reuse amsg's oversize transport so large emotionRaw payloads do not exceed Web Push limits.
     await sendPushWithMaybeBlob(pushObj, { pushSubscription: sub }, {
       vapid: {
-        email: env.VAPID_EMAIL || 'mailto:noreply@example.com',
-        publicKey: env.VAPID_PUBLIC_KEY,
-        privateKey: env.VAPID_PRIVATE_KEY,
+        email: pushEnv.VAPID_EMAIL || 'mailto:noreply@example.com',
+        publicKey: pushEnv.VAPID_PUBLIC_KEY,
+        privateKey: pushEnv.VAPID_PRIVATE_KEY,
       },
-      blobStore: createBlobStore(env),
+      blobStore: createBlobStore(pushEnv),
+      multipart: MULTIPART_TRANSPORT,
       requestUrl,
       onEvent: (e: { type: string; [k: string]: unknown }) => {
-        if (e.type === 'payload_too_large' || e.type === 'blob_put_failed' || e.type === 'blob_orphaned') {
+        if (ERROR_EVENT_TYPES.has(e.type)) {
           console.error('[emotion-eval] push delivery event', e);
         }
       },
@@ -192,37 +418,40 @@ async function runEmotionEval(body: any, env: Env, requestUrl?: string): Promise
 }
 
 /**
- * 双导出: fetch + scheduled. scheduled 只在 wrangler.toml 配 cron + DB binding 时
- * 被 CF 调度; 没绑 D1 时是 no-op, 不会跑.
+ * 双导出: fetch + scheduled. D1 BlobStore 启用时 fetch 会自动初始化表结构,
+ * 并顺手定期清理过期 blob row; scheduled 保留为可选的额外清理入口.
  *
  * fetch 在框架处理之外包了一层: 先把请求体克隆出来 (拿 emotionEval / pushSubscription),
  * 让框架跑完主回复 + 推送, 再在 waitUntil 里跑副 API 情绪评估 + 推 emotion_update.
  */
 export default {
   fetch: async (request: Request, env: Env, ctx: { waitUntil(p: Promise<unknown>): void }) => {
+    const url = new URL(request.url);
+    if (url.pathname === '/capabilities' || url.pathname === '/health') {
+      return handleCapabilitiesRequest(request, env);
+    }
+
     let body: any = null;
     try {
       body = await request.clone().json();
     } catch {
       body = null; // 非 JSON / 解析失败: 不影响主路径
     }
+    const requestedEnv = withRequestOversizeTransport(env, body);
+    const workerEnv = await prepareBlobStoreEnv(requestedEnv);
+    scheduleD1BlobCleanup(workerEnv, ctx);
+
     // 情绪评估不依赖主回复内容 (用 body.messages = 与主回复同一批消息, 跟本地一样不含新回复),
     // 所以与主回复**并行**跑, 而不是 await cfWorker.fetch (流式输出 + 推送 + 收尾可能拖 ~30s)
     // 完成后才启动 —— 砍掉情绪评估的启动延迟, 让 buff / "情绪分析中" 徽章尽快结算.
     if (body?.emotionEval) {
-      ctx.waitUntil(runEmotionEval(body, env, request.url));
+      ctx.waitUntil(runEmotionEval(body, workerEnv, request.url));
     }
-    return await (cfWorker as any).fetch(request, env, ctx);
+    return await (cfWorker as any).fetch(request, workerEnv, ctx);
   },
   async scheduled(_event: unknown, env: Env) {
-    if (!env.DB) return;
-    try {
-      await env.DB.prepare('DELETE FROM amsg_transient_blobs WHERE expires_at < ?')
-        .bind(Date.now())
-        .run();
-    } catch (e) {
-      console.error('[instant-push] blob sweeper failed', e);
-    }
+    const workerEnv = await prepareBlobStoreEnv(env);
+    await cleanupExpiredD1Blobs(workerEnv);
   },
 };
 

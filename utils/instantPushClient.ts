@@ -1,4 +1,4 @@
-import { InstantPushConfig, APIConfig } from '../types';
+import { InstantPushConfig, APIConfig, type InstantOversizeTransport } from '../types';
 import { loadPushVapid, isPushVapidReady } from './pushVapid';
 import { ActiveMsgStore } from './activeMsgStore';
 import {
@@ -306,6 +306,18 @@ export interface InstantPushPayload {
     prompt: string;
     api: { baseUrl: string; apiKey: string; model: string };
   };
+  // SullyOS Worker wrapper 读取这个字段决定本次大 payload 用 multipart 还是 D1 envelope。
+  // amsg-instant 本体会忽略未知字段, 所以旧包也能安全接收。
+  oversizeTransport?: InstantOversizeTransport;
+}
+
+export interface InstantWorkerCapabilityResult {
+  ok: boolean;
+  error?: string;
+  d1Available?: boolean;
+  d1Reason?: string;
+  multipartAvailable?: boolean;
+  raw?: unknown;
 }
 
 // ── localStorage helpers ───────────────────────────────────────────────────
@@ -347,6 +359,67 @@ export function isInstantConfigReady(cfg?: InstantPushConfig): boolean {
     c.workerUrl.startsWith('https://') &&
     isPushVapidReady()
   );
+}
+
+/** Normalize a worker URL: trim whitespace and strip trailing slashes. */
+export function normalizeWorkerUrl(url: string): string {
+  return url.trim().replace(/\/+$/, '');
+}
+
+export function getInstantOversizeTransport(cfg?: InstantPushConfig): InstantOversizeTransport {
+  const c = cfg ?? loadInstantConfig();
+  return c.useD1BlobStore ? 'd1' : 'multipart';
+}
+
+export async function probeInstantWorkerCapabilities(
+  cfg: InstantPushConfig = loadInstantConfig(),
+): Promise<InstantWorkerCapabilityResult> {
+  const workerUrl = normalizeWorkerUrl(cfg.workerUrl || '');
+  if (!workerUrl.startsWith('https://')) {
+    return { ok: false, error: 'Worker URL 未配置或不是 https' };
+  }
+
+  const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+  if (cfg.clientToken) headers['X-Client-Token'] = cfg.clientToken;
+
+  try {
+    const res = await fetch(`${workerUrl}/capabilities`, {
+      method: 'POST',
+      headers,
+      body: '{}',
+    });
+    const text = await res.text().catch(() => '');
+    let parsed: any = null;
+    try { parsed = text ? JSON.parse(text) : null; } catch { /* non-json */ }
+
+    if (!res.ok) {
+      return {
+        ok: false,
+        error: parsed?.error?.message ?? `HTTP ${res.status}${res.statusText ? ' ' + res.statusText : ''}`,
+        raw: parsed ?? text,
+      };
+    }
+    if (!parsed?.success) {
+      return {
+        ok: false,
+        error: parsed?.error?.message ?? 'Worker 未返回 capabilities',
+        raw: parsed ?? text,
+      };
+    }
+
+    const data = parsed.data ?? {};
+    const d1 = data.d1 ?? data.oversizeTransport?.d1 ?? {};
+    return {
+      ok: true,
+      d1Available: !!d1.available,
+      d1Reason: typeof d1.reason === 'string' ? d1.reason : undefined,
+      multipartAvailable: data.multipart?.available !== false,
+      raw: data,
+    };
+  } catch (e) {
+    const err = e as { message?: string } | null;
+    return { ok: false, error: err?.message ?? String(e) };
+  }
 }
 
 // ── Web Push subscription helpers ─────────────────────────────────────────
@@ -459,8 +532,13 @@ export async function sendInstantPush(
   const headers: Record<string, string> = { 'Content-Type': 'application/json' };
   if (cfg.clientToken) headers['X-Client-Token'] = cfg.clientToken;
   // amsg-instant 0.8.0-next.4 起删了 splitPattern 字段, lib 不再做 split, hook
-  // 自己返 pushPayloads 数组. caller 这边不用再兜底注入, payload 直接 stringify.
-  const body = JSON.stringify(payload);
+  // 自己返 pushPayloads 数组. caller 这边不用再兜底注入。
+  // oversizeTransport 是 SullyOS Worker wrapper 字段, 用前台开关决定本次大包走 multipart / D1。
+  const wirePayload: InstantPushPayload = {
+    ...payload,
+    oversizeTransport: getInstantOversizeTransport(cfg),
+  };
+  const body = JSON.stringify(wirePayload);
   const bodyBytes = byteLengthOf(body);
   const useKeepalive = !!options.keepalive && bodyBytes <= KEEPALIVE_MAX_BODY;
   const maskedHosts = [
@@ -501,7 +579,7 @@ export async function sendInstantPush(
           cfRay,
           responseSnippet: snippet,
         },
-        payloadTop: collectPayloadTop(payload),
+        payloadTop: collectPayloadTop(wirePayload),
       };
     }
     if (parsed?.success) return { ok: true, data: parsed.data };
@@ -519,7 +597,7 @@ export async function sendInstantPush(
           ? maskHostsInText(rawText.slice(0, RESPONSE_SNIPPET_LIMIT), maskedHosts)
           : undefined,
       },
-      payloadTop: collectPayloadTop(payload),
+      payloadTop: collectPayloadTop(wirePayload),
     };
   } catch (e) {
     const err = e as { name?: string; message?: string } | null;
@@ -528,7 +606,7 @@ export async function sendInstantPush(
       ok: false,
       error: err?.message ?? String(e),
       fetchError: { name: err?.name, message: err?.message ?? String(e) },
-      payloadTop: collectPayloadTop(payload),
+      payloadTop: collectPayloadTop(wirePayload),
     };
   }
 }

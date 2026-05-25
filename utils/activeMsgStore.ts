@@ -258,10 +258,9 @@ export const ActiveMsgStore = {
   },
 
   // ─── Phase 2 Round 2 wire: reasoning_buffer ───────────────────────────────
-  // SW writes when worker emits messageKind='reasoning'; flushInboxToChat
-  // claims by sessionId for the first content message of that session, feeds
-  // it into ctx.reasoningContent (mounts as Message.metadata.thinkingChain).
-  // Round 1: empty by design.
+  // New amsg-sw generic multipart restores complete reasoning payloads before
+  // business handling, so SW now writes a flat reasoningContent. Keep chunks[]
+  // fallback for pending rows written by older SW versions.
 
   async saveReasoning(record: InstantPushReasoningBufferEntry): Promise<void> {
     const db = await openDB();
@@ -283,7 +282,18 @@ export const ActiveMsgStore = {
       request.onsuccess = () => {
         const r = request.result as InstantPushReasoningBufferEntry | undefined;
         if (r) {
-          entry = { ...r };
+          const chunks = r.chunks ?? [];
+          const reasoningContent = chunks.length > 0
+            ? [...chunks]
+                .sort((a, b) =>
+                  a.messageIndex !== b.messageIndex
+                    ? a.messageIndex - b.messageIndex
+                    : a.chunkIndex - b.chunkIndex,
+                )
+                .map((c) => c.reasoningContent)
+                .join('')
+            : (r.reasoningContent ?? '');
+          entry = { ...r, reasoningContent };
           store.delete(sessionId);
         }
       };

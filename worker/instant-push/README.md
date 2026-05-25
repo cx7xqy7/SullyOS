@@ -2,7 +2,7 @@
 
 基于 `@rei-standard/amsg-instant` 的自部署 Cloudflare Worker。
 收到前端的 POST 请求后，调用你自己的 OpenAI 兼容 LLM，把回复分句后逐条发成 Web Push 通知。
-零数据库、零 cron，HTTPS 已保护传输。
+默认零数据库、零 cron；大包默认走 `_multipart` 分片传输。想要更稳的大对象传输时，可以额外启用 D1 BlobStore，Worker 会自动建表并顺手清理过期数据。
 
 ---
 
@@ -67,14 +67,33 @@ CF 后台连不上 GitHub、或者你 fork 了私有副本不想接 OAuth 时用
 | `VAPID_PUBLIC_KEY` | 阶段 1 生成的公钥 |
 | `VAPID_PRIVATE_KEY` | 阶段 1 生成的私钥（类型选 **Secret**） |
 
-### 可选（2 个）
+### 可选
 
 | 变量名 | 说明 |
 |--------|------|
 | `VAPID_EMAIL` | 留空则默认 `mailto:noreply@example.com`，填什么都行 |
 | `AMSG_CLIENT_TOKEN` | 防止别人扫到你的 Worker URL 滥用 CF 配额；前端填相同的值 |
+| `AMSG_OVERSIZE_TRANSPORT` | 高级兜底项。通常留空，由前台连接测试后的开关决定；填 `d1` 可让旧前端默认用 D1 |
 
 配置完重新 Deploy 一次让 secrets 生效。
+
+### 可选：启用 D1 BlobStore
+
+默认不需要 D1。超出 Web Push 单包安全线的内容会被 `amsg-instant` 拆成 `_multipart` 分片，由 `amsg-sw` 在浏览器 Service Worker 里收齐后还原。
+
+如果你愿意多部署一个 D1，想让大对象走更稳的“短 push + HTTP 拉完整包”路径：
+
+1. 创建 D1 数据库：
+   ```bash
+   wrangler d1 create instant-blob-db
+   ```
+2. 在 `wrangler.toml` 里取消注释 `[[d1_databases]]`，填入 `database_id`。
+3. 重新部署。
+4. 回到 SullyOS → Instant Push 配置，点“检测连接”。检测到 D1 后，前台才会允许打开 D1 envelope。
+
+表结构会由 Worker 首次请求自动初始化，过期 blob row 也会由 Worker 定期顺手清理。
+
+取舍很简单：`multipart` 少部署、无服务端暂存；D1 更稳，但多一个数据库。低流量场景下自动清理只会在有请求经过时触发；想更准时清理的话，可以额外打开 `wrangler.toml` 里注释掉的 cron。
 
 ---
 

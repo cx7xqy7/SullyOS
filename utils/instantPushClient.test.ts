@@ -1,5 +1,10 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { sendInstantPush, saveInstantConfig, INSTANT_PUSH_CONFIG_KEY } from './instantPushClient';
+import {
+  sendInstantPush,
+  saveInstantConfig,
+  INSTANT_PUSH_CONFIG_KEY,
+  probeInstantWorkerCapabilities,
+} from './instantPushClient';
 import type { InstantPushPayload } from './instantPushClient';
 import { savePushVapid } from './pushVapid';
 
@@ -63,6 +68,25 @@ describe('sendInstantPush splitPattern injection', () => {
     expect(body.splitPattern).toBeUndefined();
   });
 
+  it('默认把大包策略声明为 multipart', async () => {
+    await sendInstantPush(basePayload());
+    const body = JSON.parse(vi.mocked(fetch).mock.calls[0][1]!.body as string);
+    expect(body.oversizeTransport).toBe('multipart');
+  });
+
+  it('开启 D1 开关时把大包策略声明为 d1', async () => {
+    saveInstantConfig({
+      enabled: true,
+      workerUrl: 'https://worker.example.com',
+      useD1BlobStore: true,
+      d1Available: true,
+      d1CheckedWorkerUrl: 'https://worker.example.com',
+    });
+    await sendInstantPush(basePayload());
+    const body = JSON.parse(vi.mocked(fetch).mock.calls[0][1]!.body as string);
+    expect(body.oversizeTransport).toBe('d1');
+  });
+
   it('其他字段不受影响 (verify payload 形状没改)', async () => {
     await sendInstantPush(basePayload());
     const body = JSON.parse(vi.mocked(fetch).mock.calls[0][1]!.body as string);
@@ -73,5 +97,35 @@ describe('sendInstantPush splitPattern injection', () => {
       endpoint: 'https://push.example.com/e',
       keys: { p256dh: 'p', auth: 'a' },
     });
+  });
+});
+
+describe('probeInstantWorkerCapabilities', () => {
+  beforeEach(() => {
+    clearConfig();
+    setupValidConfig();
+  });
+
+  it('读取 worker 返回的 D1 能力', async () => {
+    global.fetch = vi.fn().mockResolvedValue({
+      ok: true,
+      status: 200,
+      statusText: 'OK',
+      text: async () => JSON.stringify({
+        success: true,
+        data: {
+          multipart: { available: true },
+          d1: { available: true },
+        },
+      }),
+    } as any);
+
+    const result = await probeInstantWorkerCapabilities();
+    expect(result.ok).toBe(true);
+    expect(result.d1Available).toBe(true);
+    expect(fetch).toHaveBeenCalledWith(
+      'https://worker.example.com/capabilities',
+      expect.objectContaining({ method: 'POST' }),
+    );
   });
 });

@@ -35,7 +35,7 @@
 - tool result 会拼回 OpenAI tool-call 标准消息格式，再 POST `/continue` 给 worker 续跑。
 - 续跑阶段保留同一轮 outbound session，避免工具结果和主消息上下文断链。
 
-## 3. 大包与 Cloudflare D1 BlobStore 配置
+## 3. 大包传输: 默认 multipart, 可选 D1 BlobStore
 
 部分问题的根因是 Web Push 单包大小很小。情绪 buff raw、长工具结果、reasoning 或长文本 push 都可能超过安全线。超过后如果还直接推，会出现 worker 已完成、前端却收不到结果的情况。
 
@@ -43,12 +43,25 @@
 
 - worker 发送大 payload 时走 `sendPushWithMaybeBlob`。
 - 小 payload 仍然直接 Web Push。
-- 大 payload 会先写入 BlobStore，再只推一个很小的 blob envelope。
+- 默认不启用 D1，超限 payload 会走 `amsg-instant` generic `_multipart` 分片。
+- `amsg-sw` 负责收齐分片、还原原始 payload，再交给 SullyOS 的 inbox / tool / emotion 流程。
+- 如果前台 D1 开关打开且 Worker 绑定了可用 D1，则大 payload 会先写入 BlobStore，再只推一个很小的 blob envelope。
+- D1 表结构由 Worker 自动初始化，过期 blob row 会在请求经过 Worker 时定期清理。
+- 前台通过 Worker `/capabilities` 自动检测 D1 能力；没检测到 D1 时，不允许打开 D1 envelope 开关。
 - 客户端 Service Worker 收到 envelope 后再 fetch 真正内容，继续原本的 inbox / flush 流程。
+
+### 传输策略
+
+| 前台选择 | 行为 |
+|----------|------|
+| 默认分片 | 无数据库，大包走 `_multipart` 分片 |
+| D1 envelope | 只有 `/capabilities` 检测到 D1 后才可打开，大包走 BlobStore envelope |
+
+`AMSG_OVERSIZE_TRANSPORT` 仍保留为高级兜底项；通常不需要设置。
 
 ### Cloudflare D1 配置流程
 
-如果使用大包能力，Instant Push Worker 需要配置 D1 数据库，binding 名必须是 `DB`。
+如果想启用 D1 BlobStore，Instant Push Worker 需要配置 D1 数据库，binding 名必须是 `DB`。前台会自动检测，不需要手动设置 `AMSG_OVERSIZE_TRANSPORT`。
 
 #### Cloudflare 后台方式（不用命令行）
 
@@ -56,21 +69,7 @@
 
 Cloudflare Dashboard → 左侧 `Storage & Databases` → `D1` → `Create database`，名字填 `instant-blob-db` → 创建。
 
-2. 建表：
-
-点进这个数据库 → `Console`（控制台）标签 → 把下面这段粘进去 → `Run`：
-
-```sql
-CREATE TABLE IF NOT EXISTS amsg_transient_blobs (
-  key        TEXT    PRIMARY KEY,
-  body       TEXT    NOT NULL,
-  expires_at INTEGER NOT NULL
-);
-CREATE INDEX IF NOT EXISTS idx_amsg_blobs_expires
-  ON amsg_transient_blobs(expires_at);
-```
-
-3. 绑定到 worker：
+2. 绑定到 worker：
 
 进入你的 `instant-push` Worker → `Settings` → `Bindings`（有的版本叫 `Variables/Bindings`）→ `Add binding` → 选 `D1 database`。
 
@@ -81,9 +80,13 @@ CREATE INDEX IF NOT EXISTS idx_amsg_blobs_expires
 
 保存。
 
-4. 重新部署 worker，让它拿到这个绑定。
+3. 重新部署 worker，让它拿到这个绑定。大包传输变量通常留空即可。
 
-5. 建议加定时清理：
+4. 回到 SullyOS → Instant Push 配置，点“检测连接”。检测到 D1 后，再打开 D1 envelope 开关。
+
+表不用手动建，Worker 首次用到 D1 时会自动 `CREATE TABLE IF NOT EXISTS`。过期数据也不用强制配 cron，Worker 会在有请求经过时每隔一段时间顺手清掉已过期的数据。
+
+低流量部署如果想更准时清理，可以额外加 cron：
 
 Worker → `Triggers` → `Cron Triggers` → `Add`，填：
 
@@ -91,26 +94,22 @@ Worker → `Triggers` → `Cron Triggers` → `Add`，填：
 */15 * * * *
 ```
 
-这表示每 15 分钟清一次过期数据。否则 D1 里过期行会一直堆。
-
 #### 命令行方式（如果装了 wrangler）
 
 ```bash
 wrangler d1 create instant-blob-db
-wrangler d1 execute instant-blob-db --file=worker/instant-push/schema.sql
 ```
 
-然后把输出的 `database_id` 填进 `worker/instant-push/wrangler.toml` 里那段被注释的 `[[d1_databases]]`，并取消注释 `[[d1_databases]]` 和 `[triggers]` 两块：
+然后把输出的 `database_id` 填进 `worker/instant-push/wrangler.toml` 里那段被注释的 `[[d1_databases]]`，并取消注释 `[[d1_databases]]`：
 
 ```toml
 [[d1_databases]]
 binding = "DB"
 database_name = "instant-blob-db"
 database_id = "REPLACE_WITH_YOUR_D1_ID"
-
-[triggers]
-crons = ["*/15 * * * *"]
 ```
+
+`[triggers]` cron 可选；不配也能跑，自动清理会在请求经过时触发。
 
 最后重新部署：
 
@@ -173,5 +172,5 @@ ChatApp 的 instant prompt 构建已经和本地本体对齐：
 - ChatApp instant 主回复链路已验证。
 - 情绪 buff instant 回传已验证。
 - 小红书 / Notion 工具调用与续跑状态提示已验证。
-- 大包场景依赖 Cloudflare D1 BlobStore，D1 配置完成后可正常承接长 payload。
+- 大包场景默认走 multipart；启用 D1 BlobStore 后可用 envelope 路径承接更稳的大 payload。
 - 本地构建已通过：`npm run build`。
