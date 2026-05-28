@@ -731,22 +731,51 @@ ${recentPrivate || '(暂无私聊)'}
             }
 
             // 3. Group History (uses configurable context limit)
-            const recentGroupMsgs = currentMsgs.slice(-contextLimit).map(m => {
+            // image 的 content 是 base64（processImage 压的 JPEG），emoji 是图床 URL——
+            // 都不能当文本内联进 prompt：base64 图片会把群上下文撑爆，URL 则是纯噪声。
+            // 卡片等富类型同理只留占位符。但导演要能"看见"图才能合理反应，所以仿照
+            // 私聊 buildMessageHistory 的做法：把最近 N 张图片走结构化 image_url 字段
+            // 附在 user 消息里，文本里用 [图片#k] 占位互相对齐。
+            const recentMsgsWindow = currentMsgs.slice(-contextLimit);
+            const MAX_ATTACHED_IMAGES = 3;
+            const validImageWindowIdx: number[] = [];
+            recentMsgsWindow.forEach((m, i) => {
+                if (m.type === 'image') {
+                    const url = typeof m.content === 'string' ? m.content.trim() : '';
+                    if (/^(data:|https?:\/\/)/i.test(url)) validImageWindowIdx.push(i);
+                }
+            });
+            const attachedSet = new Set(validImageWindowIdx.slice(-MAX_ATTACHED_IMAGES));
+            const attachedImages: { tag: number; url: string }[] = [];
+            const recentGroupMsgs = recentMsgsWindow.map((m, i) => {
                 let name = '用户';
                 if (m.role === 'assistant') {
                     name = characters.find(c => c.id === m.charId)?.name || '未知';
                 }
-                // image 的 content 是 base64（processImage 压的 JPEG），emoji 是图床 URL——
-                // 都不能当文本内联进 prompt：base64 图片会把群上下文撑爆，URL 则是纯噪声。
-                // 卡片等富类型同理只留占位符。
                 const rawText = typeof m.content === 'string' ? m.content : '';
-                const content = m.type === 'image' ? '[图片]'
-                    : m.type === 'emoji' ? '[表情包]'
-                    : m.type === 'transfer' ? `[发红包: ${m.metadata?.amount}]`
-                    : /^(data:|https?:\/\/)/i.test(rawText.trim()) ? '[媒体]'
-                    : rawText;
+                let content: string;
+                if (m.type === 'image') {
+                    if (attachedSet.has(i)) {
+                        const tag = attachedImages.length + 1;
+                        attachedImages.push({ tag, url: rawText.trim() });
+                        content = `[图片#${tag}]`;
+                    } else {
+                        content = '[图片]';
+                    }
+                } else if (m.type === 'emoji') {
+                    content = '[表情包]';
+                } else if (m.type === 'transfer') {
+                    content = `[发红包: ${m.metadata?.amount}]`;
+                } else if (/^(data:|https?:\/\/)/i.test(rawText.trim())) {
+                    content = '[媒体]';
+                } else {
+                    content = rawText;
+                }
                 return `${name}: ${content}`;
             }).join('\n');
+            const attachedImagesNote = attachedImages.length > 0
+                ? `\n（本轮附带 ${attachedImages.length} 张最近的图片，对应记录里的 [图片#1] ~ [图片#${attachedImages.length}]。请基于实际图片内容自然反应，不要无视，也不要瞎猜没附上的旧图。）\n`
+                : '';
 
             // NEW: Build Categorized Emoji Context (filtered by group member visibility)
             const emojiContextStr = (() => {
@@ -783,6 +812,7 @@ ${recentPrivate || '(暂无私聊)'}
 当前场景：大家正在群里聊天。
 最近聊天记录：
 ${recentGroupMsgs}
+${attachedImagesNote}
 
 ### 任务：生成一段精彩的群聊互动 (Conversation Flow)
 请作为导演，接管所有角色，让群聊**自然地流动起来**。
@@ -850,12 +880,20 @@ ${recentGroupMsgs}
 ]
 `;
 
+            // 当本轮有要附带的图片时，user 消息走结构化 content（text + image_url），
+            // 否则保持原来的纯文本，避免对不支持多模态字段的端点产生兼容问题。
+            const userMessageContent: any = attachedImages.length > 0
+                ? [
+                    { type: 'text', text: prompt },
+                    ...attachedImages.map(img => ({ type: 'image_url', image_url: { url: img.url } })),
+                  ]
+                : prompt;
             const response = await fetch(`${apiConfig.baseUrl.replace(/\/+$/, '')}/chat/completions`, {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${apiConfig.apiKey}` },
                 body: JSON.stringify({
                     model: apiConfig.model,
-                    messages: [{ role: "user", content: prompt }],
+                    messages: [{ role: "user", content: userMessageContent }],
                     temperature: 0.9, // High creativity for banter
                     max_tokens: 8000
                 })
