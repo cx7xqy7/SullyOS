@@ -956,6 +956,137 @@ export async function injectMemoryPalace(
     }
 }
 
+// ─── 外部摘要 / 日记一次性吞吐 ────────────────────────
+
+/**
+ * 把"交换日记"一次性塞进记忆宫殿。
+ * 跟 processNewMessages 用的同一套抽取 + 向量化逻辑（lightLLM 副 API、extractMemoriesFromBuffer、
+ * vectorizeAndStore），但不走缓冲区/高水位机制 —— 因为日记不是普通聊天消息，
+ * 是一篇独立的、用户主动触发的归档。
+ *
+ * 关键差异（对比 chat 自动归档）：
+ *  - 时间戳来自 diary.date，不是 Date.now() —— 这样向量记忆按 createdAt 排序时
+ *    日记会落在它真正发生的那天而不是归档的那天
+ *  - 不动 mp_lastMsgId_ 高水位 —— 防止把后续聊天处理跳过
+ *  - 不写 EventBox 跨时间链接（日记是孤立事件，绑链接需要再过一遍消息流，价值不大）
+ *
+ * @param char 至少要 id / name / memoryPalaceEnabled / embeddingConfig
+ * @param dateStr 日记日期 YYYY-MM-DD，决定 MemoryNode.createdAt
+ * @param userDiaryText 用户那页的正文
+ * @param charDiaryText 角色那页的正文（可空）
+ * @param lightLLMConfig 记忆宫殿副 API
+ * @param userName 用户昵称
+ */
+/** 一次日记归档对宫殿的具体影响, 用 status 区分各种"为什么没入宫"的情况, 供 UI 弹窗直接展示 */
+export type DiaryIngestResult =
+    | { status: 'palace_disabled' }
+    | { status: 'lightllm_missing' }
+    | { status: 'embedding_missing' }
+    | { status: 'empty_input' }
+    | { status: 'extracted_none'; stored: 0; skipped: 0 }
+    | {
+        status: 'done';
+        stored: number;
+        skipped: number;
+        nodes: { content: string; room: import('./types').MemoryRoom; importance: number; mood: string; tags: string[] }[];
+    };
+
+export async function ingestDiaryToPalace(
+    char: { id: string; name: string; memoryPalaceEnabled?: boolean; embeddingConfig?: any; systemPrompt?: string; worldview?: string },
+    dateStr: string,
+    userDiaryText: string,
+    charDiaryText: string,
+    lightLLMConfig: LightLLMConfig | null | undefined,
+    userName: string,
+): Promise<DiaryIngestResult> {
+    if (!char.memoryPalaceEnabled) return { status: 'palace_disabled' };
+    if (!lightLLMConfig?.baseUrl || !lightLLMConfig?.apiKey) {
+        console.warn(`🏰 [DiaryIngest] 跳过：lightLLM 未配置`);
+        return { status: 'lightllm_missing' };
+    }
+    const embeddingConfig = getEmbeddingConfig(char.embeddingConfig);
+    if (!embeddingConfig) {
+        console.warn(`🏰 [DiaryIngest] 跳过：embedding 配置未就绪`);
+        return { status: 'embedding_missing' };
+    }
+
+    // 构造时间戳：YYYY-MM-DD → 当地中午 12:00（避免时区把日期撇到前一天）
+    let createdAt = Date.now();
+    const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(dateStr);
+    if (m) {
+        const d = new Date(parseInt(m[1]), parseInt(m[2]) - 1, parseInt(m[3]), 12, 0, 0);
+        if (!isNaN(d.getTime())) createdAt = d.getTime();
+    }
+
+    // 把日记伪装成两条 Message 喂给 extractMemoriesFromBuffer（id 给负数，不入库不冲突）
+    const fakeMessages: Message[] = [];
+    if (userDiaryText?.trim()) {
+        fakeMessages.push({
+            id: -Math.floor(Math.random() * 1e9),
+            charId: char.id,
+            role: 'user',
+            type: 'text',
+            content: `【交换日记 ${dateStr}】我今天写道：\n${userDiaryText.trim()}`,
+            timestamp: createdAt,
+        } as Message);
+    }
+    if (charDiaryText?.trim()) {
+        fakeMessages.push({
+            id: -Math.floor(Math.random() * 1e9),
+            charId: char.id,
+            role: 'assistant',
+            type: 'text',
+            content: `【交换日记 ${dateStr}】我（${char.name}）的回复日记：\n${charDiaryText.trim()}`,
+            timestamp: createdAt + 1000,
+        } as Message);
+    }
+    if (fakeMessages.length === 0) return { status: 'empty_input' };
+
+    // 角色 / 用户档案给 LLM 当上下文
+    let charContext = `[角色档案]\n名字: ${char.name}\n核心设定:\n${char.systemPrompt || '无'}\n`;
+    if (char.worldview?.trim()) charContext += `世界观: ${char.worldview}\n`;
+    charContext += `\n[用户档案]\n名字: ${userName || '用户'}\n\n[来源说明]\n这是来自【交换日记】app 的一次归档，不是普通聊天，是一篇双方各写一页的正式日记。\n`;
+
+    const extracted = await extractMemoriesFromBuffer(
+        fakeMessages,
+        char.id,
+        char.name,
+        lightLLMConfig,
+        charContext,
+        userName || '用户',
+        [], // 不喂相关记忆，避免一次归档把 LLM 拉去做跨时间纠正
+        [], // 不喂便利贴
+    );
+
+    if (extracted.memories.length === 0) {
+        console.log(`🏰 [DiaryIngest] LLM 未提取出记忆节点`);
+        return { status: 'extracted_none', stored: 0, skipped: 0 };
+    }
+
+    // 把 createdAt 改成日记日期，origin 标 system（用户主动触发的归档）
+    for (const node of extracted.memories) {
+        node.createdAt = createdAt;
+        node.lastAccessedAt = createdAt;
+        node.origin = 'system';
+    }
+
+    const remoteConfig = getRemoteVectorConfig();
+    const result = await vectorizeAndStore(extracted.memories, embeddingConfig, remoteConfig);
+    console.log(`🏰 [DiaryIngest] 日记 ${dateStr} 入宫：提取 ${extracted.memories.length} 条，存储 ${result.stored}，去重跳过 ${result.skipped}`);
+    return {
+        status: 'done',
+        stored: result.stored,
+        skipped: result.skipped,
+        nodes: extracted.memories.map(n => ({
+            content: n.content,
+            room: n.room,
+            importance: n.importance,
+            mood: n.mood,
+            tags: n.tags,
+        })),
+    };
+}
+
 // ─── 输入管线（AI 回复后，后台） ──────────────────────
 
 // ─── 高水位标记：记录每个角色处理到的最后消息 ID ────────
