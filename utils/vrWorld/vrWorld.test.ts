@@ -1,7 +1,21 @@
 import { describe, it, expect } from 'vitest';
 import { chunkNovelText, chunkNovelTextAsync, getReadingWindow, buildNovel } from './novel';
-import { parseVROutput, parseMusicOutput, parseGuestbookOutput, parseGymOutput } from './prompts';
+import { parseVROutput, parseMusicOutput, parseGuestbookOutput, parseGymOutput, parsePostOfficeOutput } from './prompts';
 import { decodeBytes } from './decodeText';
+
+describe('parsePostOfficeOutput', () => {
+    it('parses a new letter', () => {
+        const out = parsePostOfficeOutput('<写信>今天又想起一些没说完的话。</写信><动态>寄了封漂流信</动态>');
+        expect(out.newLetter).toContain('没说完');
+        expect(out.reply).toBeUndefined();
+        expect(out.activity).toContain('漂流信');
+    });
+    it('parses a reply', () => {
+        const out = parsePostOfficeOutput('<回信>你说的我懂，挺住。</回信><动态>回了一封陌生来信</动态>');
+        expect(out.reply).toContain('挺住');
+        expect(out.newLetter).toBeUndefined();
+    });
+});
 
 describe('parseGuestbookOutput', () => {
     it('parses posts (with reply) + activity, caps at 2', () => {

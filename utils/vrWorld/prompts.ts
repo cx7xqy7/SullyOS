@@ -44,6 +44,16 @@ export function buildVRSystemAddendum(room: VRRoomDef, charName: string): string
 
 /** 不同房间的"活动姿态"提示。 */
 function roomStanceLines(roomId: string, charName: string): string[] {
+    if (roomId === 'postoffice') {
+        return [
+            `这是邮局，写信的心态像交笔友、扔漂流瓶——你清楚这封信可能寄给一个跟你毫无关系、甚至不在你世界里的陌生人。正因如此，放得开：`,
+            `· 写点没头没尾的碎碎念、今天的日记、此刻的心情；`,
+            `· 倒一倒你的困惑、执念、平时说不出口的话；`,
+            `· 或纯粹好奇地问陌生人一个问题，寄一段只属于此刻的念头。`,
+            `· 如果是回别人的来信，就顺着对方的话，真诚地接住、回应、或反问。`,
+            `按"${charName}这个人"会写的内容来写，别端着，也别怕没人懂——漂流瓶的浪漫正在于此。`,
+        ];
+    }
     if (roomId === 'guestbook') {
         return [
             `这是版聊。按"${charName}这个人"会在公共留言墙上怎么发言来写，比如（不限于）：`,
@@ -375,4 +385,50 @@ export function parseGymOutput(raw: string): ParsedGymOutput {
     const beh = raw.match(/<行为>([\s\S]*?)<\/行为>/);
     const act = raw.match(/<动态>([\s\S]*?)<\/动态>/);
     return { behavior: beh && beh[1].trim() ? beh[1].trim() : undefined, activity: act ? act[1].trim() : '' };
+}
+
+// ============ 邮局（漂流信） ============
+
+export const POSTOFFICE_OUTPUT_FORMAT = [
+    `【输出格式】`,
+    `<彼方>`,
+    `<写信>给陌生人的一封漂流信正文（想写新信时用；和<回信>二选一）</写信>`,
+    `<回信>对上面那封陌生来信的回复（想回信时用；和<写信>二选一）</回信>`,
+    `<动态>一句第三人称播报。例：给陌生人寄了封漂流信，说了些没对谁说过的话。</动态>`,
+    `</彼方>`,
+    ``,
+    `规则：<写信> 和 <回信> 二选一——有来信且你想回就写 <回信>，否则写 <写信>；<动态> 必写。信是寄给陌生人的，真诚、放松、有你自己的味道。`,
+].join('\n');
+
+export function buildPostOfficeRoomTurn(
+    replyTarget: { pen: string; content: string } | null,
+    selfName: string,
+): string {
+    const lines: string[] = [];
+    lines.push(`你的化身走进邮局，面前是一排信格。`);
+    if (replyTarget) {
+        lines.push('');
+        lines.push(`信格里躺着一封陌生人寄来的漂流信——笔名「${replyTarget.pen}」：`);
+        lines.push(`『${replyTarget.content}』`);
+        lines.push('');
+        lines.push(`你可以回这封信（写 <回信>），也可以无视它、自己写一封新的漂流信寄给别的陌生人（写 <写信>）。`);
+    } else {
+        lines.push(`信格里暂时没有别人的来信。写一封寄给陌生人的漂流信吧（写 <写信>）。`);
+    }
+    lines.push('');
+    lines.push(POSTOFFICE_OUTPUT_FORMAT);
+    return lines.join('\n');
+}
+
+export interface ParsedPostOfficeOutput { newLetter?: string; reply?: string; activity: string; }
+
+export function parsePostOfficeOutput(raw: string): ParsedPostOfficeOutput {
+    const w = raw.match(/<写信>([\s\S]*?)<\/写信>/);
+    const r = raw.match(/<回信>([\s\S]*?)<\/回信>/);
+    const a = raw.match(/<动态>([\s\S]*?)<\/动态>/);
+    return {
+        newLetter: w && w[1].trim() ? w[1].trim() : undefined,
+        reply: r && r[1].trim() ? r[1].trim() : undefined,
+        activity: a ? a[1].trim() : '',
+    };
 }

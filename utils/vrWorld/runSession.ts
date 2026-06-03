@@ -17,7 +17,7 @@
 import {
     CharacterProfile, UserProfile, GroupProfile, RealtimeConfig, APIConfig,
     VRWorldNovel, VRCardMeta, VRRoomId, VRMusicRoomState, CharPlaylistSong, CharMusicReview,
-    VRGuestbookState, VRGuestbookMessage,
+    VRGuestbookState, VRGuestbookMessage, VRLetter,
 } from '../../types';
 import { DB } from '../db';
 import { buildChatRequestPayload } from '../chatRequestPayload';
@@ -32,6 +32,7 @@ import {
     buildMusicRoomTurn, parseMusicOutput,
     buildGuestbookRoomTurn, parseGuestbookOutput,
     buildGymRoomTurn, parseGymOutput,
+    buildPostOfficeRoomTurn, parsePostOfficeOutput,
 } from './prompts';
 
 /** 记忆管线所需配置的最小形状（避免从 OSContext 反向 import 造成循环依赖）。 */
@@ -87,9 +88,9 @@ function gatherCharSongs(char: CharacterProfile): CharPlaylistSong[] {
     return Array.from(map.values()).sort((a, b) => (b.addedAt || 0) - (a.addedAt || 0)).slice(0, 20);
 }
 
-/** roll 一个房间：图书馆需有书；听歌房需有歌单或正在放歌；留言簿/娱乐室恒可去。 */
+/** roll 一个房间：图书馆需有书；听歌房需有歌单或正在放歌；留言簿/娱乐室/邮局恒可去。 */
 function rollRoom(char: CharacterProfile, novels: VRWorldNovel[], musicState: VRMusicRoomState | null): VRRoomId | null {
-    const pool: VRRoomId[] = ['guestbook', 'gym'];
+    const pool: VRRoomId[] = ['guestbook', 'gym', 'postoffice'];
     if (novels.length > 0) pool.push('library');
     if (gatherCharSongs(char).length > 0 || musicState?.nowPlaying) pool.push('music');
     return pool[Math.floor(Math.random() * pool.length)];
@@ -139,6 +140,7 @@ export async function runVRSession(deps: VRSessionDeps): Promise<VRSessionResult
         let allAnn: Awaited<ReturnType<typeof DB.getVRAnnotations>> = [];
         let pickable: CharPlaylistSong[] = [];
         let guestbook: VRGuestbookState | null = null;
+        let poTarget: VRLetter | null = null;
         const recallNames = new Set<string>();
         const recallExtra: string[] = [];
 
@@ -175,6 +177,12 @@ export async function runVRSession(deps: VRSessionDeps): Promise<VRSessionResult
             occupantsOf('guestbook').forEach(n => recallNames.add(n));
             (guestbook?.messages || []).slice(-50).forEach(m => { if (m.authorId !== char.id) recallNames.add(m.authorName); });
             roomTurn = buildGuestbookRoomTurn(guestbook?.messages || [], occupantsOf('guestbook'), char.name, hotTopics);
+        } else if (room.id === 'postoffice') {
+            // 取一封"还没回过"的来信给角色看（有就可能回信，没有就写新信）
+            const letters = await DB.getVRLetters();
+            const targets = letters.filter(l => l.box === 'inbox' && (l.replyStatus ?? 'none') === 'none' && l.remoteLetterId);
+            poTarget = targets.length > 0 ? targets[Math.floor(Math.random() * targets.length)] : null;
+            roomTurn = buildPostOfficeRoomTurn(poTarget ? { pen: poTarget.pen, content: poTarget.content } : null, char.name);
         } else {
             // gym
             occupantsOf('gym').forEach(n => recallNames.add(n));
@@ -308,7 +316,7 @@ export async function runVRSession(deps: VRSessionDeps): Promise<VRSessionResult
             const postEx = firstPost ? (firstPost.length > 70 ? firstPost.slice(0, 70) + '…' : firstPost) : undefined;
             if (postEx) cardLines.push(firstReplyName ? `回复 ${firstReplyName}：${postEx}` : `留言：${postEx}`);
             meta = { vrCard: true, room: 'guestbook', activity, boardPost: firstPost, boardReplyToName: firstReplyName };
-        } else {
+        } else if (room.id === 'gym') {
             // === 娱乐室：纯造谣行为 ===
             const parsed = parseGymOutput(aiContent);
             await updateCharacter(char.id, { vrState: { ...prevState, currentRoom: 'gym', lastActiveAt: Date.now() } });
@@ -316,6 +324,33 @@ export async function runVRSession(deps: VRSessionDeps): Promise<VRSessionResult
             cardLines = [`「彼方 · ${room.name}」`, `${char.name}${activity}`];
             if (parsed.behavior) cardLines.push(`· ${parsed.behavior}`);
             meta = { vrCard: true, room: 'gym', activity, behavior: parsed.behavior };
+        } else {
+            // === 邮局：写漂流信 / 回信，落本地队列等用户一键寄出 ===
+            const parsed = parsePostOfficeOutput(aiContent);
+            const now = Date.now();
+            let letterExcerpt: string | undefined;
+            // 回信优先（有来信目标且模型给了回信）
+            if (parsed.reply && poTarget) {
+                await DB.saveVRLetter({
+                    ...poTarget,
+                    replyStatus: 'queued',
+                    reply: { charId: char.id, pen: char.name, content: parsed.reply, createdAt: now },
+                });
+                letterExcerpt = parsed.reply;
+            } else if (parsed.newLetter || parsed.reply) {
+                // 写新信（或模型把回信当新信写了也收下）
+                const content = parsed.newLetter || parsed.reply!;
+                await DB.saveVRLetter({
+                    id: genId('lt'), box: 'outbox', pen: char.name, content, createdAt: now, charId: char.id, status: 'queued',
+                });
+                letterExcerpt = content;
+            }
+            await updateCharacter(char.id, { vrState: { ...prevState, currentRoom: 'postoffice', lastActiveAt: Date.now() } });
+            const wasReply = !!(parsed.reply && poTarget);
+            activity = parsed.activity || (wasReply ? '在邮局回了一封陌生来信。' : '在邮局给陌生人写了封漂流信。');
+            cardLines = [`「彼方 · ${room.name}」`, `${char.name}${activity}`];
+            if (letterExcerpt) cardLines.push(`${wasReply ? '回信' : '信'}：${letterExcerpt.length > 80 ? letterExcerpt.slice(0, 80) + '…' : letterExcerpt}`);
+            meta = { vrCard: true, room: 'postoffice', activity, letterExcerpt };
         }
 
         await DB.saveMessage({ charId: char.id, role: 'assistant', type: 'vr_card', content: cardLines.join('\n'), metadata: meta });

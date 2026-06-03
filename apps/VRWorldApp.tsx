@@ -12,7 +12,10 @@ import { VRScheduler } from '../utils/vrWorld/scheduler';
 import { VR_ROOMS, getRoom, VR_DEFAULT_INTERVAL_MIN } from '../utils/vrWorld/constants';
 import { buildNovelAsync, groupAnnotationsBySeg, getBookmark } from '../utils/vrWorld/novel';
 import { decodeTextFile } from '../utils/vrWorld/decodeText';
-import type { CharacterProfile, VRWorldNovel, VRNovelAnnotation, VRCardMeta, VRRoomId, VRMusicRoomState, CharPlaylistSong, VRGuestbookState, VRGuestbookMessage } from '../types';
+import { PostOffice, getPostOfficeBase, setPostOfficeBase, type RemoteReply } from '../utils/vrWorld/postOffice';
+
+const genLocalId = (p: string) => `${p}_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 7)}`;
+import type { CharacterProfile, VRWorldNovel, VRNovelAnnotation, VRCardMeta, VRRoomId, VRMusicRoomState, CharPlaylistSong, VRGuestbookState, VRGuestbookMessage, VRLetter } from '../types';
 
 // ============ chibi 形象解析（vrState.chibi → 立绘 → 头像） ============
 interface ChibiDisplay { img: string; scale: number; offsetY: number; flip: boolean; isFallback: boolean; }
@@ -38,6 +41,7 @@ const ROOM_SLOTS: Record<VRRoomId, { x: number; y: number }[]> = {
     music:     [{ x: 30, y: 74 }, { x: 55, y: 78 }, { x: 72, y: 70 }, { x: 45, y: 66 }],
     guestbook: [{ x: 28, y: 76 }, { x: 52, y: 78 }, { x: 73, y: 74 }, { x: 40, y: 68 }],
     gym:       [{ x: 26, y: 74 }, { x: 50, y: 80 }, { x: 74, y: 74 }, { x: 38, y: 66 }, { x: 62, y: 66 }],
+    postoffice:[{ x: 28, y: 76 }, { x: 52, y: 78 }, { x: 72, y: 72 }, { x: 42, y: 68 }],
 };
 
 const IDLE_QUIPS: Record<VRRoomId, string[]> = {
@@ -45,6 +49,7 @@ const IDLE_QUIPS: Record<VRRoomId, string[]> = {
     music: ['随节奏轻晃', '这首单曲循环', '戴上耳机', '调一下音量'],
     guestbook: ['写点什么呢', '路过留个名', '看看墙上的话', '嗯…'],
     gym: ['活动一下', '再来一组！', '伸个懒腰', '热身中'],
+    postoffice: ['给谁写封信呢', '封口、寄出', '翻翻信格', '写点心里话'],
 };
 
 const VRWorldApp: React.FC = () => {
@@ -226,7 +231,7 @@ const VRWorldApp: React.FC = () => {
             {enterRoom && (
                 <RoomScene roomId={enterRoom} occupants={occupantsByRoom[enterRoom] || []}
                     latestByChar={latestByChar} onClose={() => setEnterRoom(null)} onJump={jumpToAnnotation}
-                    characters={characters} userName={userName} onUserBoardPost={onUserBoardPost} />
+                    characters={characters} userName={userName} onUserBoardPost={onUserBoardPost} addToast={addToast} />
             )}
             {readerNovel && <ReaderModal novel={readerNovel} characters={characters} onClose={() => setReaderNovel(null)} />}
             {readerJump && <ReaderModal novel={readerJump.novel} characters={characters} initialSeg={readerJump.seg} peek onClose={() => setReaderJump(null)} />}
@@ -303,6 +308,23 @@ const RoomBackground: React.FC<{ roomId: VRRoomId; className?: string }> = ({ ro
                     ))}
                 </div>
                 <div className="absolute left-0 right-0 bottom-0 h-[26%]" style={{ background: 'linear-gradient(180deg,#0c2236,#06121f)' }} />
+            </div>
+        );
+    }
+    if (roomId === 'postoffice') {
+        return (
+            <div className={`absolute inset-0 ${className || ''}`} style={{ background: 'linear-gradient(180deg,#2a2418 0%,#1c1810 60%,#100d08 100%)' }}>
+                {/* 一墙信格 */}
+                <div className="absolute left-[6%] right-[6%] top-[16%] h-[42%] rounded-sm" style={{
+                    backgroundImage: 'repeating-linear-gradient(90deg, #4a3a22 0 2px, transparent 2px 56px), repeating-linear-gradient(0deg, #4a3a22 0 2px, transparent 2px 40px)',
+                    background: 'rgba(70,52,28,0.25)', boxShadow: 'inset 0 0 30px rgba(0,0,0,.4)',
+                }} />
+                {[20, 44, 68].map((l, i) => (
+                    <div key={i} className="absolute w-6 h-4 rounded-[1px]" style={{ left: `${l}%`, top: `${22 + (i % 2) * 14}%`, transform: `rotate(${i % 2 ? -4 : 5}deg)`, background: ['#f3e7c8', '#e8dcc0', '#efe2c4'][i % 3], boxShadow: '0 2px 5px rgba(0,0,0,.4)' }} />
+                ))}
+                {/* 暖光台灯 */}
+                <div className="absolute top-[10%] right-[14%] w-16 h-16 rounded-full" style={{ background: 'radial-gradient(circle,rgba(255,214,140,.4),transparent 70%)', filter: 'blur(8px)' }} />
+                <div className="absolute left-0 right-0 bottom-0 h-[30%]" style={{ background: 'linear-gradient(180deg,#3a2c18,#160f08)' }} />
             </div>
         );
     }
@@ -444,6 +466,178 @@ const WorldView: React.FC<{
     </div>
 );
 
+// ============ 邮局信件管理面板 ============
+const PostOfficePanel: React.FC<{ addToast?: (m: string, t?: any) => void }> = ({ addToast }) => {
+    const [letters, setLetters] = useState<VRLetter[]>([]);
+    const [busy, setBusy] = useState<string | null>(null);
+    const [showCfg, setShowCfg] = useState(false);
+    const [baseUrl, setBaseUrl] = useState(getPostOfficeBase());
+
+    const load = useCallback(async () => setLetters(await DB.getVRLetters()), []);
+    useEffect(() => {
+        void load();
+        const h = () => { void load(); };
+        window.addEventListener('vr-session-done', h);
+        return () => window.removeEventListener('vr-session-done', h);
+    }, [load]);
+
+    const outQueued = letters.filter(l => l.box === 'outbox' && l.status === 'queued');
+    const replyQueued = letters.filter(l => l.box === 'inbox' && l.replyStatus === 'queued' && l.reply);
+    const inboxWaiting = letters.filter(l => l.box === 'inbox' && (l.replyStatus ?? 'none') === 'none');
+    const sentAwaiting = letters.filter(l => l.box === 'outbox' && l.status === 'sent');
+    const archived = letters.filter(l => l.box === 'outbox' && l.status === 'archived');
+
+    const sendOutbox = async () => {
+        if (outQueued.length === 0) return; setBusy('send');
+        try {
+            const ids = await PostOffice.uploadLetters(outQueued.map(l => ({ pen: l.pen, content: l.content })));
+            await DB.saveVRLetters(outQueued.map((l, i) => ({ ...l, status: 'sent', remoteId: ids[i], sentAt: Date.now() })));
+            await load(); addToast?.(`已寄出 ${ids.length} 封漂流信`, 'success');
+        } catch (e: any) { addToast?.('寄出失败：' + (e?.message || '检查后端地址'), 'error'); } finally { setBusy(null); }
+    };
+    const refreshInbox = async () => {
+        setBusy('inbox');
+        try {
+            const remote = await PostOffice.fetchInbox(5);
+            const fresh: VRLetter[] = remote.map(r => ({ id: genLocalId('lt'), box: 'inbox', pen: r.pen, content: r.content, createdAt: r.created_at, remoteLetterId: r.id, replyStatus: 'none', fetchedAt: Date.now() }));
+            await DB.saveVRLetters(fresh);
+            await load(); addToast?.(remote.length ? `收到 ${remote.length} 封陌生来信` : '暂时没有新的来信', 'info');
+        } catch (e: any) { addToast?.('刷新失败：' + (e?.message || '检查后端地址'), 'error'); } finally { setBusy(null); }
+    };
+    const sendReplies = async () => {
+        if (replyQueued.length === 0) return; setBusy('reply');
+        try {
+            const payload = replyQueued.map(l => ({
+                letterId: l.remoteLetterId!, pen: l.reply!.pen,
+                content: l.reply!.userNote ? `${l.reply!.content}\n\n——\n${l.reply!.userNote}` : l.reply!.content,
+            }));
+            await PostOffice.uploadReplies(payload);
+            await DB.saveVRLetters(replyQueued.map(l => ({ ...l, replyStatus: 'sent' as const })));
+            await load(); addToast?.(`已发出 ${payload.length} 封回信`, 'success');
+        } catch (e: any) { addToast?.('发送失败：' + (e?.message || '检查后端地址'), 'error'); } finally { setBusy(null); }
+    };
+    const collectReplies = async () => {
+        setBusy('collect');
+        try {
+            const replies = await PostOffice.fetchReplies();
+            if (replies.length === 0) { addToast?.('还没有人回你的信', 'info'); setBusy(null); return; }
+            const byLetter = new Map<string, RemoteReply[]>();
+            replies.forEach(r => { const a = byLetter.get(r.letter_id) || []; a.push(r); byLetter.set(r.letter_id, a); });
+            const updates: VRLetter[] = [];
+            const releaseIds: string[] = [];
+            for (const l of sentAwaiting) {
+                const rs = l.remoteId ? byLetter.get(l.remoteId) : undefined;
+                if (rs && rs.length) {
+                    updates.push({ ...l, status: 'archived', repliesReceived: rs.map(x => ({ pen: x.pen, content: x.content, createdAt: x.created_at })) });
+                    releaseIds.push(l.remoteId!);
+                }
+            }
+            if (updates.length) { await DB.saveVRLetters(updates); await PostOffice.release(releaseIds); }
+            await load();
+            addToast?.(updates.length ? `收到 ${updates.length} 封信的回复，已留档` : '回复还没匹配到你的信', 'success');
+        } catch (e: any) { addToast?.('收取失败：' + (e?.message || '检查后端地址'), 'error'); } finally { setBusy(null); }
+    };
+
+    const setUserNote = async (l: VRLetter, note: string) => {
+        const next = { ...l, reply: { ...l.reply!, userNote: note } };
+        setLetters(prev => prev.map(x => x.id === l.id ? next : x));
+        await DB.saveVRLetter(next);
+    };
+    const del = async (id: string) => { await DB.deleteVRLetter(id); await load(); };
+
+    const Section: React.FC<{ title: string; count: number; children: React.ReactNode }> = ({ title, count, children }) => (
+        <div className="mb-3">
+            <div className="text-[10px] tracking-[0.2em] text-amber-200/70 mb-1.5" style={{ fontFamily: `'Noto Serif SC',serif` }}>{title}{count > 0 ? ` · ${count}` : ''}</div>
+            {children}
+        </div>
+    );
+
+    return (
+        <div className="absolute top-14 left-3 right-3 bottom-3 z-20 rounded-2xl overflow-hidden flex flex-col backdrop-blur-md"
+            style={{ background: 'rgba(30,24,14,0.66)', border: '1px solid rgba(220,190,120,0.25)', boxShadow: '0 8px 26px rgba(0,0,0,.45)' }}>
+            {/* 动作行 */}
+            <div className="flex items-center gap-1.5 px-3 py-2 border-b border-white/10 shrink-0">
+                <span className="text-[11px] tracking-[0.2em] text-amber-100/80 mr-auto" style={{ fontFamily: `'Noto Serif SC',serif` }}>邮局</span>
+                <button onClick={refreshInbox} disabled={!!busy} className="text-[10.5px] px-2.5 py-1 rounded-full bg-white/8 text-amber-100/90 disabled:opacity-40">{busy === 'inbox' ? '…' : '刷新收件箱'}</button>
+                <button onClick={collectReplies} disabled={!!busy} className="text-[10.5px] px-2.5 py-1 rounded-full bg-white/8 text-amber-100/90 disabled:opacity-40">{busy === 'collect' ? '…' : '收取回复'}</button>
+                <button onClick={() => setShowCfg(s => !s)} className="text-[10.5px] px-2 py-1 rounded-full text-amber-200/50">⚙</button>
+            </div>
+
+            {showCfg && (
+                <div className="px-3 py-2 border-b border-white/10 shrink-0 flex items-center gap-2">
+                    <input value={baseUrl} onChange={e => setBaseUrl(e.target.value)} placeholder="后端地址"
+                        className="flex-1 rounded-lg bg-white/8 px-2.5 py-1.5 text-[11px] text-white outline-none" />
+                    <button onClick={() => { setPostOfficeBase(baseUrl); addToast?.('已保存后端地址', 'success'); }} className="text-[10.5px] px-2.5 py-1 rounded-full bg-amber-400/80 text-black">存</button>
+                </div>
+            )}
+
+            <div className="flex-1 overflow-y-auto px-3 py-2.5">
+                {/* 待寄出 */}
+                <Section title="待寄出" count={outQueued.length}>
+                    {outQueued.length === 0 ? <p className="text-[10.5px] text-white/35">角色在邮局写的漂流信会排在这里，你确认后一键寄出。</p> : (
+                        <>
+                            {outQueued.map(l => (
+                                <div key={l.id} className="rounded-lg p-2 mb-1.5 text-[11.5px] text-amber-50/90" style={{ background: 'rgba(255,255,255,.05)' }}>
+                                    <div className="flex items-center gap-1.5 mb-0.5"><span className="text-amber-200/90 font-bold text-[10.5px]">{l.pen}</span><button onClick={() => del(l.id)} className="ml-auto text-white/30 text-[10px]">删</button></div>
+                                    <p className="leading-snug whitespace-pre-wrap">{l.content}</p>
+                                </div>
+                            ))}
+                            <button onClick={sendOutbox} disabled={!!busy} className="w-full mt-1 rounded-full py-2 text-[12px] font-semibold text-black disabled:opacity-40" style={{ background: 'linear-gradient(120deg,#f3d08a,#e8b75e)' }}>{busy === 'send' ? '寄出中…' : `一键寄出（${outQueued.length}）`}</button>
+                        </>
+                    )}
+                </Section>
+
+                {/* 待回复 */}
+                <Section title="待发送的回信" count={replyQueued.length}>
+                    {replyQueued.length === 0 ? <p className="text-[10.5px] text-white/35">角色回的信会排在这里，你可补充几句一起发。</p> : (
+                        <>
+                            {replyQueued.map(l => (
+                                <div key={l.id} className="rounded-lg p-2 mb-1.5" style={{ background: 'rgba(255,255,255,.05)' }}>
+                                    <p className="text-[10.5px] text-white/45 leading-snug mb-1">原信（{l.pen}）：{l.content.length > 80 ? l.content.slice(0, 80) + '…' : l.content}</p>
+                                    <p className="text-[11.5px] text-amber-50/90 leading-snug whitespace-pre-wrap">回信：{l.reply!.content}</p>
+                                    <input value={l.reply!.userNote || ''} onChange={e => setUserNote(l, e.target.value)} placeholder="想补充几句一起回？（选填）"
+                                        className="w-full mt-1.5 rounded-md bg-black/20 px-2 py-1 text-[11px] text-white placeholder-white/30 outline-none" />
+                                </div>
+                            ))}
+                            <button onClick={sendReplies} disabled={!!busy} className="w-full mt-1 rounded-full py-2 text-[12px] font-semibold text-black disabled:opacity-40" style={{ background: 'linear-gradient(120deg,#f3d08a,#e8b75e)' }}>{busy === 'reply' ? '发送中…' : `一键发送回信（${replyQueued.length}）`}</button>
+                        </>
+                    )}
+                </Section>
+
+                {/* 收件箱（待角色回信） */}
+                {inboxWaiting.length > 0 && (
+                    <Section title="收件箱（等角色来回信）" count={inboxWaiting.length}>
+                        {inboxWaiting.slice(0, 8).map(l => (
+                            <div key={l.id} className="rounded-lg p-2 mb-1.5 text-[11px] text-white/75" style={{ background: 'rgba(255,255,255,.04)' }}>
+                                <span className="text-sky-200/80 font-bold text-[10.5px]">{l.pen}</span>：{l.content.length > 90 ? l.content.slice(0, 90) + '…' : l.content}
+                            </div>
+                        ))}
+                    </Section>
+                )}
+
+                {/* 信匣（已寄出待回复 + 留档） */}
+                {(sentAwaiting.length > 0 || archived.length > 0) && (
+                    <Section title="信匣" count={sentAwaiting.length + archived.length}>
+                        {sentAwaiting.map(l => (
+                            <div key={l.id} className="rounded-lg p-2 mb-1.5 text-[11px]" style={{ background: 'rgba(255,255,255,.04)' }}>
+                                <div className="text-white/70 leading-snug">寄出·等回复：{l.content.length > 70 ? l.content.slice(0, 70) + '…' : l.content}</div>
+                            </div>
+                        ))}
+                        {archived.map(l => (
+                            <div key={l.id} className="rounded-lg p-2 mb-1.5 text-[11px]" style={{ background: 'rgba(255,255,255,.05)' }}>
+                                <div className="text-amber-50/80 leading-snug mb-1">你的信：{l.content.length > 70 ? l.content.slice(0, 70) + '…' : l.content}</div>
+                                {(l.repliesReceived || []).map((r, i) => (
+                                    <div key={i} className="text-[11px] text-amber-100/85 pl-2 border-l-2 border-amber-300/40 leading-snug mt-1"><span className="font-bold">{r.pen}</span> 回：{r.content}</div>
+                                ))}
+                            </div>
+                        ))}
+                    </Section>
+                )}
+            </div>
+        </div>
+    );
+};
+
 // ============ 房间场景（全屏） ============
 const toSong = (s: CharPlaylistSong): Song => ({ id: s.id, name: s.name, artists: s.artists, album: s.album, albumPic: s.albumPic, duration: s.duration, fee: s.fee ?? 0 });
 
@@ -454,11 +648,13 @@ const RoomScene: React.FC<{
     characters: CharacterProfile[];
     userName: string;
     onUserBoardPost: (content: string) => Promise<void>;
-}> = ({ roomId, occupants, latestByChar, onClose, onJump, characters, userName, onUserBoardPost }) => {
+    addToast?: (m: string, t?: any) => void;
+}> = ({ roomId, occupants, latestByChar, onClose, onJump, characters, userName, onUserBoardPost, addToast }) => {
     const room = getRoom(roomId);
     const slots = ROOM_SLOTS[roomId];
     const isMusic = roomId === 'music';
     const isGuestbook = roomId === 'guestbook';
+    const isPostOffice = roomId === 'postoffice';
     const [detail, setDetail] = useState<CharacterProfile | null>(null);
     const [musicState, setMusicState] = useState<VRMusicRoomState | null>(null);
     const [board, setBoard] = useState<VRGuestbookState | null>(null);
@@ -589,6 +785,9 @@ const RoomScene: React.FC<{
                     );
                 })()}
 
+                {/* 邮局：信件管理面板 */}
+                {isPostOffice && <PostOfficePanel addToast={addToast} />}
+
                 {/* chibi 站位 */}
                 {occupants.map((c, i) => {
                     const slot = slots[i % slots.length];
@@ -601,7 +800,7 @@ const RoomScene: React.FC<{
                         </div>
                     );
                 })}
-                {occupants.length === 0 && !isMusic && !isGuestbook && (
+                {occupants.length === 0 && !isMusic && !isGuestbook && !isPostOffice && (
                     <div className="absolute inset-0 flex items-center justify-center">
                         <p className="text-white/70 text-[12px] bg-black/30 rounded-full px-4 py-2">这个房间还没有人。去「接入」启用角色吧。</p>
                     </div>

@@ -607,8 +607,8 @@ export interface NovelBook {
 // 天然被上下文与记忆总结捕捉。
 // =====================================================================
 
-/** 虚拟世界里的房间。v1 只实装 library，其余先占位（LLM 造谣）。 */
-export type VRRoomId = 'library' | 'music' | 'guestbook' | 'gym';
+/** 虚拟世界里的房间。 */
+export type VRRoomId = 'library' | 'music' | 'guestbook' | 'gym' | 'postoffice';
 
 /** 全局小说库里的一本书（所有角色共享原文，各自留批注、各自书签）。 */
 export interface VRWorldNovel {
@@ -718,6 +718,42 @@ export interface VRCardMeta {
     boardReplyToName?: string;
     /** 这条卡片是"用户在留言簿发言"广播给该 char 的 */
     userBoardPost?: boolean;
+    // --- 邮局专用 ---
+    /** 本次写信/回信的正文摘要 */
+    letterExcerpt?: string;
+}
+
+/** 邮局：一封信收到的回复（留档用）。 */
+export interface VRLetterReply {
+    pen: string;
+    content: string;
+    createdAt: number;
+}
+
+/**
+ * 邮局信件（本地存档 + 队列）。
+ * box='outbox'：我方角色写的漂流信（待寄出→已寄出→收到回复留档）。
+ * box='inbox' ：从别的用户那抽到的信（待回信→待发送回信→已发送）。
+ */
+export interface VRLetter {
+    id: string;                 // 本地 id
+    box: 'outbox' | 'inbox';
+    pen: string;                // 笔名（写信角色名 / 远端寄信方笔名）
+    content: string;
+    createdAt: number;
+    charId?: string;            // 写这封信/回信的角色
+
+    // outbox
+    status?: 'queued' | 'sent' | 'archived';  // 待寄出 / 已寄出 / 收到回复并留档
+    remoteId?: string;          // 寄出后服务端分配的远端 id
+    sentAt?: number;
+    repliesReceived?: VRLetterReply[];
+
+    // inbox
+    remoteLetterId?: string;    // 远端信 id（回信时用）
+    replyStatus?: 'none' | 'queued' | 'sent'; // 未回 / 待发送回信 / 已发送
+    reply?: { charId: string; pen: string; content: string; createdAt: number; userNote?: string };
+    fetchedAt?: number;
 }
 
 /** 听歌房队列项。 */
@@ -1895,6 +1931,7 @@ export interface FullBackupData {
     customCreatorParts?: CustomCreatorPart[]; // 捏脸系统自定义部件
     vrMusicRoom?: VRMusicRoomState;            // 听歌房共享状态
     vrGuestbook?: VRGuestbookState;            // 留言簿共享状态
+    vrLetters?: VRLetter[];                    // 邮局信件（本地存档+队列）
     songs?: SongSheet[]; // Songwriting app data
     
     // Bank Data

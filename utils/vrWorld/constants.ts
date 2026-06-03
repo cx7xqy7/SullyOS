@@ -59,6 +59,15 @@ export const VR_ROOMS: VRRoomDef[] = [
         implemented: true,
         accent: 'emerald',
     },
+    {
+        id: 'postoffice',
+        name: '邮局',
+        blurb: '一间挂满信格的安静邮局，能给素不相识的人写漂流信，也能回别人寄来的信。',
+        affordance: '你可以写一封寄给陌生人的漂流信（碎碎念、日记、困惑、执念都行），或回一封别人寄来的信。',
+        emoji: '',
+        implemented: true,
+        accent: 'amber',
+    },
 ];
 
 export const getRoom = (id: VRRoomId): VRRoomDef =>
