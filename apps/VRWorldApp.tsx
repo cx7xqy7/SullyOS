@@ -321,6 +321,35 @@ const VRWorldApp: React.FC = () => {
 
 // ============ 通用：CSS 房间场景背景 ============
 const RoomBackground: React.FC<{ roomId: VRRoomId; className?: string }> = ({ roomId, className }) => {
+    // 每个房间的插画底图（托管在 assets 仓库）。统一套一层"彼方"调性处理：
+    // 降饱和 + 压暗 + 轻柔化把图推远、弱化清晰度，再叠暗紫色洗 + 底部压暗 + 暗角，
+    // 让五个房间是一套风格、且立绘能跳出来。
+    const ROOM_BG: Partial<Record<VRRoomId, string>> = {
+        library: 'https://raw.githubusercontent.com/qegj567-cloud/SullyOS-assets/main/img/BOOK.png',
+        music: 'https://raw.githubusercontent.com/qegj567-cloud/SullyOS-assets/main/img/MUSIC.png',
+        guestbook: 'https://raw.githubusercontent.com/qegj567-cloud/SullyOS-assets/main/img/PLAY.jpg',
+        postoffice: 'https://raw.githubusercontent.com/qegj567-cloud/SullyOS-assets/main/img/post.png',
+        gym: 'https://raw.githubusercontent.com/qegj567-cloud/SullyOS-assets/main/img/ALL.png',
+    };
+    const bgUrl = ROOM_BG[roomId];
+    if (bgUrl) {
+        return (
+            <div className={`absolute inset-0 overflow-hidden ${className || ''}`} style={{ background: '#0a0816' }}>
+                {/* 底图：降饱和/压暗/轻柔化，并略放大避免柔化露边 */}
+                <div className="absolute inset-0" style={{
+                    backgroundImage: `url(${bgUrl})`, backgroundSize: 'cover', backgroundPosition: 'center',
+                    filter: 'saturate(0.78) brightness(0.6) contrast(1.02) blur(1.3px)',
+                    transform: 'scale(1.06)',
+                }} />
+                {/* 统一暗紫色洗 + 底部压暗给立绘让位 */}
+                <div className="absolute inset-0" style={{ background: 'linear-gradient(180deg, rgba(22,17,46,0.42) 0%, rgba(13,10,30,0.20) 42%, rgba(7,5,18,0.86) 100%)' }} />
+                {/* 暗角 */}
+                <div className="absolute inset-0" style={{ background: 'radial-gradient(120% 92% at 50% 36%, transparent 40%, rgba(5,4,14,0.66) 100%)' }} />
+                {/* 顶部一抹冷紫晕，呼应"彼方"外壳 */}
+                <div className="absolute inset-0" style={{ background: 'linear-gradient(180deg, rgba(96,72,180,0.16), transparent 28%)' }} />
+            </div>
+        );
+    }
     if (roomId === 'library') {
         return (
             <div className={`absolute inset-0 ${className || ''}`} style={{ background: 'linear-gradient(180deg,#3a2a1c 0%,#2a1d12 60%,#1c130b 100%)' }}>
