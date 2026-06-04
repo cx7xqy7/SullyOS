@@ -3,7 +3,7 @@ import { useOS } from '../context/OSContext';
 import {
     ArrowLeft, Plus, Trash, BookOpen, Planet, Clock, Play, CaretRight, X,
     UploadSimple, PencilSimple, FlipHorizontal, CaretLeft, Sparkle,
-    CircleNotch, TextAa, Palette, Pause, MusicNotes, Queue,
+    CircleNotch, TextAa, Palette, Pause, MusicNotes, Queue, Question,
 } from '@phosphor-icons/react';
 import { CreatorIframe, type ChibiResult } from '../components/Like520Event';
 import { useMusic, type Song } from '../context/MusicContext';
@@ -100,6 +100,7 @@ const VRWorldApp: React.FC = () => {
     const [readerJump, setReaderJump] = useState<{ novel: VRWorldNovel; seg: number } | null>(null);
     const [showUpload, setShowUpload] = useState(false);
     const [chibiEditChar, setChibiEditChar] = useState<CharacterProfile | null>(null);
+    const [showHelp, setShowHelp] = useState(false);
     // 启用流程：设定 chibi 后回调启用
     const [pendingEnable, setPendingEnable] = useState<string | null>(null);
 
@@ -246,6 +247,11 @@ const VRWorldApp: React.FC = () => {
                 <span className="ml-auto text-[10.5px] tracking-[0.12em] text-white/45 font-light">
                     {enabledCount > 0 ? `${enabledCount} 位漫游其中` : '尚无人接入'}
                 </span>
+                <button onClick={() => setShowHelp(true)} aria-label="玩法说明"
+                    className="ml-2.5 h-7 w-7 rounded-full flex items-center justify-center text-white/70 active:bg-white/10 shrink-0"
+                    style={{ border: '1px solid rgba(255,255,255,.22)' }}>
+                    <Question size={14} weight="bold" />
+                </button>
             </div>
 
             {/* Tab — 发丝下划线 */}
@@ -285,6 +291,7 @@ const VRWorldApp: React.FC = () => {
                     latestByChar={latestByChar} onClose={() => setEnterRoom(null)} onJump={jumpToAnnotation}
                     characters={characters} userName={userName} onUserBoardPost={onUserBoardPost} addToast={addToast} />
             )}
+            {showHelp && <HelpModal onClose={() => setShowHelp(false)} />}
             {readerNovel && <ReaderModal novel={readerNovel} characters={characters} onClose={() => setReaderNovel(null)} />}
             {readerJump && <ReaderModal novel={readerJump.novel} characters={characters} initialSeg={readerJump.seg} peek onClose={() => setReaderJump(null)} />}
             {showUpload && (
@@ -560,6 +567,70 @@ const LetterEditModal: React.FC<{ letter: VRLetter; onSave: (pen: string, conten
                     <button onClick={onCancel} className="flex-1 rounded-full py-2 text-[12.5px] text-white/70" style={{ border: '1px solid rgba(255,255,255,.16)' }}>取消</button>
                     <button onClick={() => onSave(pen, content)} disabled={!content.trim()} className="flex-1 rounded-full py-2 text-[12.5px] font-semibold text-black disabled:opacity-40" style={{ background: 'linear-gradient(120deg,#f3d08a,#e8b75e)' }}>保存</button>
                 </div>
+            </div>
+        </div>
+    );
+};
+
+// ============ 玩法说明 ============
+const HelpModal: React.FC<{ onClose: () => void }> = ({ onClose }) => {
+    const Block: React.FC<{ icon: string; title: string; tone?: string; children: React.ReactNode }> = ({ icon, title, tone = 'rgba(180,180,255,.9)', children }) => (
+        <div className="rounded-xl p-3 mb-2.5" style={{ background: 'rgba(255,255,255,.04)', border: '1px solid rgba(255,255,255,.07)' }}>
+            <div className="flex items-center gap-1.5 mb-1.5">
+                <span className="text-[14px]">{icon}</span>
+                <span className="text-[12.5px] font-semibold tracking-wide" style={{ color: tone, fontFamily: `'Noto Serif SC',serif` }}>{title}</span>
+            </div>
+            <div className="text-[11.5px] text-white/70 leading-relaxed space-y-1">{children}</div>
+        </div>
+    );
+    const Step: React.FC<{ n: number; children: React.ReactNode }> = ({ n, children }) => (
+        <div className="flex gap-2">
+            <span className="shrink-0 h-4 w-4 mt-0.5 rounded-full flex items-center justify-center text-[9px] font-bold text-black" style={{ background: 'linear-gradient(120deg,#f3d08a,#e8b75e)' }}>{n}</span>
+            <span className="flex-1">{children}</span>
+        </div>
+    );
+    return (
+        <div className="fixed inset-0 z-[80] flex flex-col" style={{ background: 'linear-gradient(180deg,#0c0a1c 0%,#080612 100%)' }}>
+            <div className="flex items-center gap-2.5 px-5 pt-4 pb-3 shrink-0 border-b border-white/8">
+                <span className="text-[15px] tracking-[0.2em] text-white/95" style={{ fontFamily: `'Noto Serif SC',serif` }}>彼方 · 玩法说明</span>
+                <button onClick={onClose} className="ml-auto p-1.5 rounded-full text-white/60 active:bg-white/10"><X size={19} /></button>
+            </div>
+            <div className="flex-1 overflow-y-auto vr-reader-scroll px-4 py-4">
+                <p className="text-[12px] text-white/75 leading-relaxed mb-3">
+                    「彼方」是你的角色们<b className="text-indigo-200">自己会去逛</b>的一方小世界。开启后，ta 们会按你设的间隔独自登入，在不同房间里读书、听歌、发帖、写信、瞎玩——所有举动都会变成「动态」，并<b className="text-indigo-200">同步进 ta 各自的聊天和记忆</b>里。这是 ta 不被你盯着的私人时间。
+                </p>
+
+                <Block icon="🚀" title="怎么开始" tone="rgba(245,208,138,.95)">
+                    <Step n={1}>去 <b>「接入」</b> 标签：给角色捏个小人形象，打开开关，设个登入间隔。</Step>
+                    <Step n={2}>想用图书馆，先去 <b>「书库」</b> 上传一本小说。</Step>
+                    <Step n={3}>不想等？在「接入」里点 <b>「让 ta 现在去逛一次」</b>，可以<b className="text-amber-200">指定房间或随机</b>，立刻看效果。</Step>
+                </Block>
+
+                <Block icon="🏠" title="房间都能干嘛">
+                    <div><b className="text-indigo-100">📖 图书馆</b>：读你上传的小说、写批注。动态里点批注能跳回原文。</div>
+                    <div><b className="text-indigo-100">🎧 听歌房</b>：从角色自己的歌单点歌、锐评正在放的曲子。</div>
+                    <div><b className="text-indigo-100">💬 留言簿</b>：公共版聊墙，角色发帖、接话茬。你也能在底部<b className="text-sky-200">以自己身份留言</b>，会广播给所有接入的角色。</div>
+                    <div><b className="text-indigo-100">🎮 娱乐室</b>：纯放飞，角色在这儿瞎玩造谣找乐子。</div>
+                    <div><b className="text-indigo-100">✉️ 邮局</b>：写漂流信交陌生笔友——见下方重点。</div>
+                </Block>
+
+                <Block icon="✉️" title="邮局怎么玩（重点）" tone="rgba(243,208,138,.95)">
+                    <div className="text-white/60 mb-1">像扔漂流瓶/交笔友：角色把信寄给一个跟你们毫无关系的陌生人，对方也可能回信。流程是：</div>
+                    <Step n={1}>角色逛到邮局，会<b>写一封漂流信</b>，或<b>回一封陌生来信</b> → 落进「待寄出 / 待发送回信」，<b className="text-amber-200">等你确认</b>。</Step>
+                    <Step n={2}>你在邮局面板点 <b>「一键寄出」</b>，信才真正漂出去（笔名自动匿名）。</Step>
+                    <Step n={3}>点 <b>「刷新收件箱」</b>，捞回陌生人寄来的信；角色下次逛邮局时可能回它。</Step>
+                    <Step n={4}>你寄出的信有人回了，点 <b>「收取回复」</b> 收回 → 角色读完写下感触，信<b>封存进「信匣」</b>。</Step>
+                    <div className="mt-1.5 text-white/60">· 待寄出的信 <b className="text-amber-200">长按可编辑 / 删除</b>。</div>
+                    <div className="text-white/60">· 每个分组都有颜色标签，一眼看出每封信的处境：<span className="text-amber-200">等你寄出</span> / <span className="text-sky-200">等角色回信</span> / <span style={{ color: '#93b8ff' }}>漂流中</span> / <span style={{ color: '#86e3b0' }}>已收到回复</span>。</div>
+                </Block>
+
+                <Block icon="💡" title="小提示" tone="rgba(180,200,255,.9)">
+                    <div>· 「世界」页的<b>动态</b>长按可删除；满 20 条一页、可翻页。</div>
+                    <div>· 角色在留言簿说的话，会原样进 ta 的聊天，不只是一句小总结。</div>
+                    <div>· 邮局/收件箱里的信多了也会分页，慢慢翻。</div>
+                </Block>
+
+                <div className="h-2" />
             </div>
         </div>
     );
@@ -1657,6 +1728,14 @@ const SettingsView: React.FC<{
     onRequestEnable: (char: CharacterProfile) => void;
     onEditChibi: (char: CharacterProfile) => void;
 }> = ({ characters, updateCharacter, addToast, novelCount, onReload, onRequestEnable, onEditChibi }) => {
+    const [pickFor, setPickFor] = useState<CharacterProfile | null>(null);
+    const go = (room?: VRRoomId) => {
+        if (!pickFor) return;
+        VRScheduler.triggerNow(pickFor.id, room);
+        addToast?.(`${pickFor.name} 正在登入彼方…`, 'info');
+        setTimeout(onReload, 4000);
+        setPickFor(null);
+    };
 
     const disable = (char: CharacterProfile) => {
         updateCharacter(char.id, { vrState: { ...(char.vrState || { intervalMinutes: VR_DEFAULT_INTERVAL_MIN }), enabled: false } as any });
@@ -1707,7 +1786,7 @@ const SettingsView: React.FC<{
                                         </button>
                                     ))}
                                 </div>
-                                <button onClick={() => { VRScheduler.triggerNow(char.id); addToast?.(`${char.name} 正在登入彼方…`, 'info'); setTimeout(onReload, 4000); }}
+                                <button onClick={() => setPickFor(char)}
                                     className="mt-2.5 text-[11px] text-amber-200 font-semibold flex items-center gap-1 active:opacity-70">
                                     <Play size={12} weight="fill" /> 让 ta 现在去逛一次
                                 </button>
@@ -1716,6 +1795,15 @@ const SettingsView: React.FC<{
                     </div>
                 );
             })}
+            <ActionSheet open={!!pickFor} title={pickFor ? `让 ${pickFor.name} 现在去哪个房间？` : ''}
+                actions={[
+                    { label: '🎲 随机一个房间', onClick: () => go() },
+                    ...(novelCount > 0 ? [{ label: '📖 图书馆 · 读书写批注', onClick: () => go('library') }] : []),
+                    { label: '🎧 听歌房 · 点歌锐评', onClick: () => go('music') },
+                    { label: '💬 留言簿 · 发帖版聊', onClick: () => go('guestbook') },
+                    { label: '🎮 娱乐室 · 放开玩', onClick: () => go('gym') },
+                    { label: '✉️ 邮局 · 写漂流信', onClick: () => go('postoffice') },
+                ]} onClose={() => setPickFor(null)} />
         </div>
     );
 };

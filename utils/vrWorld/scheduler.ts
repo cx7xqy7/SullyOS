@@ -59,7 +59,7 @@ function removeLastFire(charId: string) {
     saveLastFire(m);
 }
 
-let triggerCallback: ((charId: string) => void | Promise<void>) | null = null;
+let triggerCallback: ((charId: string, room?: string) => void | Promise<void>) | null = null;
 let visibilityListener: (() => void) | null = null;
 let focusListener: (() => void) | null = null;
 let mainThreadTimer: ReturnType<typeof setInterval> | null = null;
@@ -143,7 +143,7 @@ function detachListeners() {
 
 export const VRScheduler = {
     /** 注册触发回调（应用启动时调一次）。 */
-    onTrigger(callback: (charId: string) => void | Promise<void>) {
+    onTrigger(callback: (charId: string, room?: string) => void | Promise<void>) {
         triggerCallback = callback;
         attachListeners();
         checkOverdue();
@@ -189,10 +189,10 @@ export const VRScheduler = {
         return s ? s.intervalMs / 60000 : null;
     },
 
-    /** 立刻触发一次（UI 上"现在去逛逛"按钮用），不影响计划。 */
-    triggerNow(charId: string) {
+    /** 立刻触发一次（UI 上"现在去逛逛"按钮用），不影响计划。room 可指定房间，省略则随机。 */
+    triggerNow(charId: string, room?: string) {
         setLastFire(charId, Date.now());
         schedulePreciseTimer();
-        if (triggerCallback) void triggerCallback(charId);
+        if (triggerCallback) void triggerCallback(charId, room);
     },
 };

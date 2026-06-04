@@ -52,6 +52,8 @@ export interface VRSessionDeps {
     realtimeConfig?: RealtimeConfig;
     memoryPalaceConfig?: MemoryConfigLike;
     updateCharacter: (id: string, updates: Partial<CharacterProfile>) => Promise<void> | void;
+    /** 用户手动触发时指定的房间；省略 = 随机。不可用（如指定图书馆但无书）时自动回退随机。 */
+    forcedRoom?: VRRoomId;
 }
 
 export interface VRSessionResult {
@@ -96,15 +98,16 @@ function nameLine(name: string, act: string): string {
 }
 
 /** roll 一个房间：图书馆需有书；听歌房需有歌单或正在放歌；留言簿/娱乐室/邮局恒可去。 */
-function rollRoom(char: CharacterProfile, novels: VRWorldNovel[], musicState: VRMusicRoomState | null): VRRoomId | null {
+function rollRoom(char: CharacterProfile, novels: VRWorldNovel[], musicState: VRMusicRoomState | null, prefer?: VRRoomId): VRRoomId | null {
     const pool: VRRoomId[] = ['guestbook', 'gym', 'postoffice'];
     if (novels.length > 0) pool.push('library');
     if (gatherCharSongs(char).length > 0 || musicState?.nowPlaying) pool.push('music');
+    if (prefer && pool.includes(prefer)) return prefer; // 指定的房间可用则去，否则回退随机
     return pool[Math.floor(Math.random() * pool.length)];
 }
 
 export async function runVRSession(deps: VRSessionDeps): Promise<VRSessionResult> {
-    const { char, characters, apiConfig, userProfile, groups, realtimeConfig, memoryPalaceConfig, updateCharacter } = deps;
+    const { char, characters, apiConfig, userProfile, groups, realtimeConfig, memoryPalaceConfig, updateCharacter, forcedRoom } = deps;
 
     if (running.has(char.id)) return { ok: false, reason: 'busy' };
 
@@ -113,7 +116,7 @@ export async function runVRSession(deps: VRSessionDeps): Promise<VRSessionResult
 
     const novels = await DB.getVRNovels();
     const musicState = await DB.getVRMusicRoom();
-    const roomId = rollRoom(char, novels, musicState);
+    const roomId = rollRoom(char, novels, musicState, forcedRoom);
     if (!roomId) return { ok: false, reason: 'no-content' };
     const room = getRoom(roomId);
 
