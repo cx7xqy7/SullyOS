@@ -809,7 +809,7 @@ const HelpModal: React.FC<{ onClose: () => void }> = ({ onClose }) => {
                 </Block>
 
                 <Block title="小提示" tone="rgba(180,200,255,.9)">
-                    <div>· 「世界」页的<b>动态</b>长按可删除；满 20 条一页、可翻页。</div>
+                    <div>· 「世界」页的<b>动态</b>长按可删除；满 5 条一页、可翻页。</div>
                     <div>· 角色在留言簿说的话，会原样进 ta 的聊天，不只是一句小总结。</div>
                     <div>· 阅读器里的批注都是<b>角色自己留</b>的；你目前只能翻看，<b className="text-amber-200">还不能亲自写批注</b>（以后再说）。</div>
                     <div>· 邮局/收件箱里的信多了也会分页，慢慢翻。</div>
@@ -875,7 +875,7 @@ const WorldView: React.FC<{
     onJump: (novelId: string | undefined, segIdx: number) => void;
     onDeleteFeed: (msgId: number) => void; onClearFeed: () => void;
 }> = ({ occupantsByRoom, feed, novelCount, poBadge, onEnterRoom, onGoLibrary, onJump, onDeleteFeed, onClearFeed }) => {
-    const FEED_PER_PAGE = 20;
+    const FEED_PER_PAGE = 5;
     const [page, setPage] = useState(0);
     const totalPages = Math.max(1, Math.ceil(feed.length / FEED_PER_PAGE));
     const curPage = Math.min(page, totalPages - 1);
