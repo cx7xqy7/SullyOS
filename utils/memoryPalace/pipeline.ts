@@ -1109,27 +1109,6 @@ export function getMemoryPalaceHighWaterMark(charId: string): number {
     return getLastProcessedId(charId);
 }
 
-/**
- * 回拨高水位标记（供「重开全自动记忆」补处理空档段使用）。
- *
- * 背景：palace 向量化在 autoArchive 关闭期间会无条件推进 hwm（pipeline 存进向量
- * 就推），但可读的「日度总结」是在 React 层、被 autoArchiveEnabled gate 才写进
- * char.memories。于是 hideBeforeMessageId..hwm 之间会形成「只有向量、没有日度总结」
- * 的空档。把 hwm 拨回隐藏线，这段就重新进入缓冲区，常规追平会补回日度总结再推进 hide，
- * 避免「追平成功后顺带隐藏了没有可读总结的消息」。
- *
- * 取舍：会对空档段重新向量化，产生重复节点/向量（完整可读归档 > 去重）。
- * 只允许把水位线往回拨（target < 当前值才生效），避免被误用为前进推进。
- */
-export function rewindMemoryPalaceHighWaterMark(charId: string, targetMsgId: number): void {
-    const cur = getLastProcessedId(charId);
-    const target = Math.max(0, Math.floor(targetMsgId || 0));
-    if (target < cur) {
-        setLastProcessedId(charId, target);
-        console.log(`🏰 [Pipeline] 高水位回拨：${cur} → ${target}（重开全自动记忆补处理空档段）`);
-    }
-}
-
 // ─── 缓冲区配置 ─────────────────────────────────────
 
 /** 热区大小：最近 N 条消息始终留在聊天上下文，不处理 */
