@@ -200,7 +200,7 @@ const TheaterPanel: React.FC<{ addToast?: (m: string, t?: any) => void }> = ({ a
 
                     {view === 'script' && cur && <ScriptView script={cur} onBack={() => setView('list')} onStage={() => setView('stage')} onDelete={async () => { await DB.deleteVRScript(cur.id); await reload(); setView('list'); addToast?.('已删除', 'success'); }} />}
                     {view === 'stage' && cur && <StageView script={cur} ctx={ctx} apiConfig={apiConfig} addToast={addToast} onBack={() => setView('list')} onPolished={(body) => setCur({ ...cur, body })} onStaged={async (play) => { await DB.saveVRStagedPlay(play); await reload(); setCurPlay(play); setView('play'); }} />}
-                    {view === 'play' && curPlay && <PlaybackView play={curPlay} characters={characters} onBack={() => { setView('list'); setTab('history'); }} />}
+                    {view === 'play' && curPlay && <PlaybackView play={curPlay} characters={characters} onBack={() => { setView('list'); setTab('history'); }} onDelete={async () => { await DB.deleteVRStagedPlay(curPlay.id); await reload(); setView('list'); setTab('history'); addToast?.('已删除这场演出', 'success'); }} />}
                 </div>
             </div>
 
@@ -419,8 +419,10 @@ const ActorNoteCard: React.FC<{ note: VRActorNote; cast: VRCastAssign[]; charact
 };
 
 // ============ 演出回放（大舞台 · chibi 蹦跶） ============
-const PlaybackView: React.FC<{ play: VRStagedPlay; characters: CharacterProfile[]; onBack: () => void }> = ({ play, characters, onBack }) => {
+const PlaybackView: React.FC<{ play: VRStagedPlay; characters: CharacterProfile[]; onBack: () => void; onDelete: () => void }> = ({ play, characters, onBack, onDelete }) => {
     const [i, setI] = useState(0);
+    const [showScript, setShowScript] = useState(false);
+    const [confirmDel, setConfirmDel] = useState(false);
     const beats = play.stage;
     const ended = i >= beats.length;
 
@@ -450,7 +452,34 @@ const PlaybackView: React.FC<{ play: VRStagedPlay; characters: CharacterProfile[
                 <button onClick={onBack} style={{ color: TH.goldSoft, padding: 4, marginLeft: -4 }}><CaretLeft size={18} /></button>
                 <span style={{ fontSize: 14, fontWeight: 800, color: TH.text, fontFamily: SERIF }} className="truncate">《{play.title}》</span>
                 <span className="ml-auto" style={{ fontSize: 11, fontWeight: 800, color: TH.warn }}>{play.rating?.split(/\s/)[0]}</span>
+                <button onClick={() => setShowScript(s => !s)} title="看终本" style={{ color: showScript ? TH.gold : TH.goldSoft, padding: 4, fontSize: 16 }}>📜</button>
+                <button onClick={() => setConfirmDel(true)} title="删除这场演出" style={{ color: TH.crimson, padding: 4, opacity: .8 }}><Trash size={15} /></button>
             </div>
+
+            {/* 终本（导演整合后的最终剧本，可读文本） */}
+            {showScript && (
+                <pre style={{ fontSize: 11.5, color: TH.text, whiteSpace: 'pre-wrap', lineHeight: 1.8, borderRadius: 10, padding: 12, marginBottom: 12, background: TH.bg2, border: `1px solid ${TH.line}`, fontFamily: SERIF, maxHeight: '52vh', overflowY: 'auto' }}>
+                    {beats.map((b, k) =>
+                        b.kind === 'narration' ? `（${b.text}）`
+                        : b.kind === 'enter' ? `——${b.actorName} 上场——`
+                        : b.kind === 'exit' ? `——${b.actorName} 下场——`
+                        : `${b.actorName}：${b.text}`
+                    ).join('\n')}
+                </pre>
+            )}
+
+            {/* 删除确认 */}
+            {confirmDel && (
+                <div style={{ position: 'fixed', inset: 0, zIndex: 340, display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 24, background: 'rgba(10,4,7,.62)' }} onClick={() => setConfirmDel(false)}>
+                    <div onClick={e => e.stopPropagation()} style={{ width: '100%', maxWidth: 300, background: TH.bg2, border: `1px solid ${TH.line}`, borderRadius: 14, padding: 16, color: TH.text, textAlign: 'center' }}>
+                        <div style={{ fontSize: 13, fontFamily: SERIF, marginBottom: 14 }}>删除这场《{play.title}》？</div>
+                        <div className="flex gap-2">
+                            <TButton block onClick={() => setConfirmDel(false)}>取消</TButton>
+                            <TButton block variant="primary" onClick={() => { setConfirmDel(false); onDelete(); }}>删除</TButton>
+                        </div>
+                    </div>
+                </div>
+            )}
 
             {/* 大舞台 */}
             <div style={{ height: 'min(58vh, 460px)', borderRadius: 12, position: 'relative', overflow: 'hidden', marginBottom: 12, background: 'radial-gradient(120% 80% at 50% 0%, #4a1018 0%, #2a0a10 45%, #140406 100%)', border: `1px solid ${TH.line}`, boxShadow: 'inset 0 0 60px rgba(0,0,0,.6)' }}>
