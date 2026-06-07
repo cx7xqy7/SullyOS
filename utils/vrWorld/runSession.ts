@@ -17,7 +17,7 @@
 import {
     CharacterProfile, UserProfile, GroupProfile, RealtimeConfig, APIConfig,
     VRWorldNovel, VRCardMeta, VRRoomId, VRMusicRoomState, CharPlaylistSong, CharMusicReview,
-    VRGuestbookState, VRGuestbookMessage, VRLetter, VRGardenState, VRGardenPlant,
+    VRGuestbookState, VRGuestbookMessage, VRLetter, VRGardenState, VRGardenPlant, VRScript,
 } from '../../types';
 import { DB } from '../db';
 import { buildChatRequestPayload } from '../chatRequestPayload';
@@ -37,6 +37,7 @@ import {
     buildPostOfficeRoomTurn, parsePostOfficeOutput,
     buildPostOfficeReadTurn, parsePostOfficeReadOutput,
     buildGardenRoomTurn, parseGardenOutput,
+    buildTheaterRoomTurn, parseScriptOutput,
 } from './prompts';
 
 /** 记忆管线所需配置的最小形状（避免从 OSContext 反向 import 造成循环依赖）。 */
@@ -130,7 +131,7 @@ function nextFreeSlot(plants: VRGardenPlant[]): number {
 
 /** roll 一个房间：图书馆需有书；听歌房需有歌单或正在放歌；留言簿/娱乐室/邮局/花田恒可去。 */
 function rollRoom(char: CharacterProfile, novels: VRWorldNovel[], musicState: VRMusicRoomState | null, prefer?: VRRoomId): VRRoomId | null {
-    const pool: VRRoomId[] = ['guestbook', 'gym', 'postoffice', 'garden'];
+    const pool: VRRoomId[] = ['guestbook', 'gym', 'postoffice', 'garden', 'theater'];
     if (novels.length > 0) pool.push('library');
     if (gatherCharSongs(char).length > 0 || musicState?.nowPlaying) pool.push('music');
     if (prefer && pool.includes(prefer)) return prefer; // 指定的房间可用则去，否则回退随机
@@ -263,6 +264,9 @@ export async function runVRSession(deps: VRSessionDeps): Promise<VRSessionResult
             (garden?.plants || []).slice(-24).forEach(p => { if (p.planterId !== char.id) recallNames.add(p.planterName); });
             const full = (garden?.plants?.length || 0) >= GARDEN_MAX_PLANTS;
             roomTurn = buildGardenRoomTurn(garden?.plants || [], occupantsOf('garden'), char.name, full);
+        } else if (room.id === 'theater') {
+            occupantsOf('theater').forEach(n => recallNames.add(n));
+            roomTurn = buildTheaterRoomTurn(occupantsOf('theater'), char.name);
         } else {
             // gym
             occupantsOf('gym').forEach(n => recallNames.add(n));
@@ -482,6 +486,20 @@ export async function runVRSession(deps: VRSessionDeps): Promise<VRSessionResult
             else if (gardenAction === 'water' && note) cardLines.push(`浇水时说：${note}`);
             if (parsed.behavior) cardLines.push(`· ${parsed.behavior}`);
             meta = { vrCard: true, room: 'garden', activity, behavior: parsed.behavior, gardenAction, gardenPlantLabel: plantLabel, gardenNote: note };
+        } else if (room.id === 'theater') {
+            // === 剧院：角色即兴写一出舞台剧投稿 ===
+            const parsed = parseScriptOutput(aiContent);
+            const script: VRScript = {
+                id: genId('scr'), title: parsed.title, logline: parsed.logline,
+                roles: parsed.roles, body: parsed.body,
+                authorId: char.id, authorName: char.name, source: 'char', createdAt: Date.now(),
+            };
+            await DB.saveVRScript(script);
+            await updateCharacter(char.id, { vrState: { ...prevState, currentRoom: 'theater', lastActiveAt: Date.now() } });
+            activity = `创作了一出${parsed.logline ? `关于「${parsed.logline}」的` : ''}舞台剧《${parsed.title}》。`;
+            cardLines = [`「彼方 · ${room.name}」`, nameLine(char.name, activity)];
+            if (parsed.roles.length) cardLines.push(`登场：${parsed.roles.map(r => r.name).join('、')}`);
+            meta = { vrCard: true, room: 'theater', activity };
         } else if (room.id === 'postoffice' && poReadTarget) {
             // === 邮局：认领自己寄出的信、读陌生人的回信、写感触 → 封存 ===
             const parsed = parsePostOfficeReadOutput(aiContent);

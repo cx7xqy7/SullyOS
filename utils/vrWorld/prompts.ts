@@ -85,6 +85,14 @@ function roomStanceLines(roomId: string, charName: string): string[] {
             `别老盯着"运动/对战"那几样，越跳脱越好。自由发挥，写出热闹和乐子。能带上在场玩家就带上——认识的按你心里的关系来，不认识的就是一起玩的陌生玩家。`,
         ];
     }
+    if (roomId === 'theater') {
+        return [
+            `这是剧院后台，堆满了别人投稿的剧本。按"${charName}这个人"的趣味，即兴写一出**完全原创**的舞台剧投稿：`,
+            `· 定个你想写的题材/主题，安排 2~5 个登场角色（各给一句话性格），写出有起承转合的台词；`,
+            `· 题材、笔调、角色都该带着你自己的人设烙印——你会写什么样的故事，就写什么样的；`,
+            `· 这是你一个人的创作时间，别把它写成跟现实里某人的对话，就当个独立作品来写。`,
+        ];
+    }
     if (roomId === 'garden') {
         return [
             `这是花田，慢下来的地方。按"${charName}这个人"会怎么待在花田里来写，比如（不限于）：`,
@@ -588,6 +596,203 @@ export interface ParsedGardenOutput {
     waterNote?: string;
     behavior?: string;
     activity: string;
+}
+
+// ============ 剧院 / 话剧部门 ============
+
+const SCRIPT_TAGS = `用下面的标签把剧本输出（标签外不要写别的）：
+<标题>剧名</标题>
+<简介>一句话讲这出戏关于什么</简介>
+<角色>
+角色名|一句话性格
+角色名|一句话性格
+</角色>
+<正文>
+按"幕"组织。台词写「角色名：台词」；动作/环境/舞台提示写进圆括号，如（灯光暗下）。1~3 幕，别太长。
+</正文>`;
+
+/** 角色逛进剧院 → 即兴写一出原创舞台剧。 */
+export function buildTheaterRoomTurn(occupantNames: string[], selfName: string): string {
+    const others = occupantNames.filter(n => n !== selfName);
+    return [
+        others.length > 0
+            ? `你晃进剧院后台，${others.join('、')}也在各写各的。你找了个角落，铺开稿纸。`
+            : `你晃进剧院后台，幕布后很安静，你铺开稿纸，想写一出自己的戏。`,
+        '',
+        '写一出**完全原创**的舞台剧投稿（带你自己的人设趣味）。',
+        SCRIPT_TAGS,
+    ].join('\n');
+}
+
+/** 用户给个风格/主题，让 LLM 代写一出剧本。 */
+export function buildLLMScriptTurn(brief: string): string {
+    return [
+        `你是一位舞台剧编剧。请按下面的要求写一出**原创**舞台剧：`,
+        `要求/风格/主题：${brief || '自由发挥，写一出有意思的短剧'}`,
+        '',
+        SCRIPT_TAGS,
+    ].join('\n');
+}
+
+/** 把一份剧本按文学风格 + 参考艺术风格润色重写。 */
+export function buildPolishTurn(body: string, literaryStyle: string, artStyle: string, extra: string): string {
+    return [
+        `把下面这出舞台剧**润色重写**，保留原有的登场角色与主要情节走向，但提升文学质感：`,
+        literaryStyle ? `· 文学风格：${literaryStyle}` : '',
+        artStyle ? `· 参考艺术风格：${artStyle}` : '',
+        extra ? `· 额外要求：${extra}` : '',
+        '',
+        '原剧本：',
+        body,
+        '',
+        SCRIPT_TAGS,
+    ].filter(Boolean).join('\n');
+}
+
+export interface ParsedScript {
+    title: string;
+    logline: string;
+    roles: { name: string; persona: string }[];
+    body: string;
+}
+
+export function parseScriptOutput(raw: string): ParsedScript {
+    const pick = (tag: string) => {
+        const m = raw.match(new RegExp(`<${tag}>([\\s\\S]*?)</${tag}>`));
+        return m ? m[1].trim() : '';
+    };
+    const title = stripLeakedAttrs(pick('标题')) || '无名之戏';
+    const logline = stripLeakedAttrs(pick('简介'));
+    const rolesRaw = pick('角色');
+    const roles = rolesRaw.split('\n').map(l => l.replace(/^[-·•\s]+/, '').trim()).filter(Boolean).map(l => {
+        const [name, ...rest] = l.split(/[|｜/／:：]/);
+        return { name: (name || '').trim(), persona: rest.join('/').trim() };
+    }).filter(r => r.name);
+    const body = pick('正文') || raw.trim();
+    return { title, logline, roles, body };
+}
+
+/** 演员读剧本 → 给导演意见（逐角色模式：一次一个演员）。 */
+export function buildActorReviewTurn(title: string, logline: string, body: string, myRole: string, castLine: string, selfName: string): string {
+    return [
+        `「彼方 · 剧院」导演看中了一出戏《${title}》（${logline}），邀请你参演。`,
+        `这出戏的演员分配：${castLine}`,
+        `**你饰演的角色是：${myRole}**。`,
+        '',
+        '完整剧本如下：',
+        body,
+        '',
+        `以"${selfName}这个人"的身份读完它：你对自己要演的角色、要说的台词、要做的动作，有没有想改的地方？`,
+        `你可以提具体的台词/动作修改方案给导演；如果这戏/这角色让你不舒服、不想配合，也可以照你的真实性子来——自然选择就好。`,
+        '用下面标签作答（标签外不要写别的）：',
+        `<意见>一句你此刻的想法/吐槽</意见>`,
+        `<修改>具体想改的台词或动作方案；没有就写：无</修改>`,
+        `<配合>是 或 否</配合>`,
+    ].join('\n');
+}
+
+/** 两次调用模式：一次让 LLM 同时扮演所有演员给意见（省，但可能 OOC）。 */
+export function buildActorsBatchTurn(title: string, logline: string, body: string, cast: { roleName: string; actorName: string; persona?: string }[]): string {
+    const roster = cast.map(c => `- ${c.actorName}（饰 ${c.roleName}${c.persona ? `，性格：${c.persona}` : ''}）`).join('\n');
+    return [
+        `「彼方 · 剧院」要排一出戏《${title}》（${logline}）。下面是全体演员和各自分到的角色：`,
+        roster,
+        '',
+        '完整剧本：',
+        body,
+        '',
+        `请你**分别站在每位演员的立场**，按各自的性格，给导演一句意见、可选的修改方案、以及配不配合。`,
+        `每位演员用一个 <演员> 块（标签外不要写别的）：`,
+        cast.map(c => `<演员 名="${c.actorName}">\n<意见>...</意见>\n<修改>...或：无</修改>\n<配合>是/否</配合>\n</演员>`).join('\n'),
+    ].join('\n');
+}
+
+export interface ParsedActorReview { note: string; changes?: string; cooperative: boolean; }
+
+function parseCooperative(s: string): boolean {
+    const t = (s || '').trim();
+    return !/(^否|不配合|拒绝|不想演|不演|不$)/.test(t);
+}
+
+export function parseActorReview(raw: string): ParsedActorReview {
+    const pick = (tag: string) => { const m = raw.match(new RegExp(`<${tag}>([\\s\\S]*?)</${tag}>`)); return m ? m[1].trim() : ''; };
+    const note = stripLeakedAttrs(pick('意见')) || '（没什么意见）';
+    const changesRaw = stripLeakedAttrs(pick('修改'));
+    const changes = (!changesRaw || changesRaw === '无' || changesRaw === '没有') ? undefined : changesRaw;
+    return { note, changes, cooperative: parseCooperative(pick('配合')) };
+}
+
+/** 解析"一次扮演所有演员"的批量意见，按 名= 归位。 */
+export function parseActorsBatch(raw: string): Record<string, ParsedActorReview> {
+    const out: Record<string, ParsedActorReview> = {};
+    const re = /<演员\s+名="([^"]+)">([\s\S]*?)<\/演员>/g;
+    let m: RegExpExecArray | null;
+    while ((m = re.exec(raw)) !== null) {
+        out[m[1].trim()] = parseActorReview(m[2]);
+    }
+    return out;
+}
+
+/** 导演整合：原剧本 + 所有演员意见 → 最终可演出脚本 + 观众锐评 + 评级。 */
+export function buildDirectorTurn(
+    title: string, logline: string, body: string,
+    cast: { roleName: string; actorName: string }[],
+    notes: { actorName: string; roleName: string; note: string; changes?: string; cooperative: boolean }[],
+    bubbleMax: number,
+): string {
+    const roster = cast.map(c => `${c.actorName} 饰 ${c.roleName}`).join('；');
+    const feedback = notes.map(n =>
+        `· ${n.actorName}（${n.roleName}）：${n.note}${n.changes ? `；修改方案：${n.changes}` : ''}${n.cooperative ? '' : '【不太配合，请把这种别扭/抗拒自然地揉进演出，别强行抹平】'}`
+    ).join('\n');
+    return [
+        `你是这出舞台剧《${title}》（${logline}）的导演。演员与角色：${roster}。`,
+        '',
+        '原始剧本：',
+        body,
+        '',
+        '演员们读完剧本后的意见/修改方案：',
+        feedback || '（演员没什么意见）',
+        '',
+        `请你**满足演员们合理的需求**，重写并定下最终演出版，然后用下面的格式输出（严格按格式，标签外不要写别的）：`,
+        `<终本>`,
+        `每行一拍，用竖线分隔，四种拍：`,
+        `旁白|（环境、动作、舞台提示等任何非台词内容都写成旁白）`,
+        `上场|演员名`,
+        `下场|演员名`,
+        `台词|演员名|一句台词`,
+        `——台词每拍**不超过 ${bubbleMax} 字**，长的用句号切成多拍（一拍一个气泡）。用"演员名"不是角色名。`,
+        `</终本>`,
+        `<观众>`,
+        `赛博观众名|一句看完的锐评/吐槽`,
+        `（3~4 条，名字自己起，风格各异）`,
+        `</观众>`,
+        `<评级>一个等级（S/A/B/C 或 ★星）+ 半句话点评</评级>`,
+    ].join('\n');
+}
+
+export interface ParsedDirector {
+    stage: { kind: 'line' | 'narration' | 'enter' | 'exit'; actorName?: string; text: string }[];
+    reviews: { critic: string; text: string }[];
+    rating: string;
+}
+
+export function parseDirectorOutput(raw: string): ParsedDirector {
+    const pick = (tag: string) => { const m = raw.match(new RegExp(`<${tag}>([\\s\\S]*?)</${tag}>`)); return m ? m[1].trim() : ''; };
+    const stage: ParsedDirector['stage'] = [];
+    for (const line of pick('终本').split('\n').map(l => l.trim()).filter(Boolean)) {
+        const parts = line.split('|').map(p => p.trim());
+        const head = parts[0];
+        if (head === '旁白') stage.push({ kind: 'narration', text: stripLeakedAttrs(parts.slice(1).join('|')) });
+        else if (head === '上场') stage.push({ kind: 'enter', actorName: parts[1], text: parts[1] || '' });
+        else if (head === '下场') stage.push({ kind: 'exit', actorName: parts[1], text: parts[1] || '' });
+        else if (head === '台词') stage.push({ kind: 'line', actorName: parts[1], text: stripLeakedAttrs(parts.slice(2).join('|')) });
+    }
+    const reviews = pick('观众').split('\n').map(l => l.trim()).filter(Boolean).map(l => {
+        const [critic, ...rest] = l.split(/[|｜:：]/);
+        return { critic: (critic || '观众').replace(/^[-·•\s]+/, '').trim(), text: rest.join('：').trim() };
+    }).filter(r => r.text);
+    const rating = stripLeakedAttrs(pick('评级')) || 'B';
+    return { stage, reviews, rating };
 }
 
 export function parseGardenOutput(raw: string): ParsedGardenOutput {

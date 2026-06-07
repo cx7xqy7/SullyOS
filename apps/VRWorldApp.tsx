@@ -6,6 +6,7 @@ import {
     CircleNotch, TextAa, Palette, Pause, MusicNotes, Queue, Question,
 } from '@phosphor-icons/react';
 import { IslandButton, IslandInput, IslandSelect, IslandModal } from '../components/island/IslandUI';
+import TheaterPanel from './theater/TheaterPanel';
 import { CreatorIframe, type ChibiResult } from '../components/Like520Event';
 import { useMusic, type Song } from '../context/MusicContext';
 import { DB } from '../utils/db';
@@ -94,6 +95,7 @@ const ROOM_SLOTS: Record<VRRoomId, { x: number; y: number }[]> = {
     gym:       [{ x: 26, y: 74 }, { x: 50, y: 80 }, { x: 74, y: 74 }, { x: 38, y: 66 }, { x: 62, y: 66 }],
     postoffice:[{ x: 28, y: 76 }, { x: 52, y: 78 }, { x: 72, y: 72 }, { x: 42, y: 68 }],
     garden:    [{ x: 22, y: 82 }, { x: 78, y: 82 }, { x: 50, y: 86 }, { x: 35, y: 76 }, { x: 66, y: 76 }],
+    theater:   [{ x: 30, y: 80 }, { x: 70, y: 80 }, { x: 50, y: 84 }, { x: 40, y: 72 }, { x: 60, y: 72 }],
     cafe:      [{ x: 30, y: 74 }, { x: 54, y: 78 }, { x: 70, y: 72 }],
 };
 
@@ -104,6 +106,7 @@ const IDLE_QUIPS: Record<VRRoomId, string[]> = {
     gym: ['活动一下', '再来一组！', '伸个懒腰', '热身中'],
     postoffice: ['给谁写封信呢', '封口、寄出', '翻翻信格', '写点心里话'],
     garden: ['浇浇水', '看看花苞', '松松土', '闻闻花香'],
+    theater: ['对台词…', '再走一遍', '背词中', '候场'],
     cafe: ['', '', '', ''],
 };
 
@@ -447,6 +450,22 @@ const RoomBackground: React.FC<{ roomId: VRRoomId; className?: string }> = ({ ro
                 <div className="absolute inset-0" style={{ background: 'radial-gradient(120% 92% at 50% 36%, transparent 40%, rgba(5,4,14,0.66) 100%)' }} />
                 {/* 顶部一抹冷紫晕，呼应"彼方"外壳 */}
                 <div className="absolute inset-0" style={{ background: 'linear-gradient(180deg, rgba(96,72,180,0.16), transparent 28%)' }} />
+            </div>
+        );
+    }
+    if (roomId === 'theater') {
+        // 小剧场：暗红绒幕 + 舞台追光 + 木地板，话剧部门的调性。
+        return (
+            <div className={`absolute inset-0 overflow-hidden ${className || ''}`} style={{ background: 'linear-gradient(180deg,#2a0a10 0%,#1a0508 60%,#0d0305 100%)' }}>
+                {/* 顶部绒幕 */}
+                <div className="absolute top-0 left-0 right-0 h-[14%]" style={{ background: 'repeating-linear-gradient(90deg,#7a1020 0 12px,#a11528 12px 24px)', boxShadow: '0 4px 14px rgba(0,0,0,.5)' }} />
+                {/* 两侧垂幕 */}
+                <div className="absolute top-0 bottom-0 left-0 w-[16%]" style={{ background: 'linear-gradient(90deg,#6e0e1c,#3a0810 80%,transparent)' }} />
+                <div className="absolute top-0 bottom-0 right-0 w-[16%]" style={{ background: 'linear-gradient(270deg,#6e0e1c,#3a0810 80%,transparent)' }} />
+                {/* 追光 */}
+                <div className="absolute left-1/2 -translate-x-1/2 top-[10%] w-[55%] h-[70%]" style={{ background: 'radial-gradient(ellipse at 50% 0%, rgba(255,224,150,.22), transparent 70%)' }} />
+                {/* 木地板 */}
+                <div className="absolute left-0 right-0 bottom-0 h-[26%]" style={{ background: 'linear-gradient(180deg,#3a241a,#1a0f0a)', backgroundImage: 'repeating-linear-gradient(90deg, rgba(0,0,0,.18) 0 2px, transparent 2px 24px)' }} />
             </div>
         );
     }
@@ -826,6 +845,7 @@ const HelpModal: React.FC<{ onClose: () => void }> = ({ onClose }) => {
                     <div><b className="text-indigo-100">娱乐室</b>：纯放飞，角色在这儿瞎玩造谣找乐子。</div>
                     <div><b className="text-indigo-100">邮局</b>：写漂流信交陌生笔友——见下方重点。</div>
                     <div><b style={{ color: '#9fe0a3' }}>花田</b>：公共花圃。角色逛进来会<b>种花</b>（许个愿）或给别人的花<b>浇水</b>帮它长大。你也能<b style={{ color: '#9fe0a3' }}>亲自种 / 浇水</b>——一株花浇满 5 次水就会开花，是大家接力养出来的。</div>
+                    <div><b style={{ color: '#f5a6a6' }}>剧院</b>：角色逛进来会<b>写一出舞台剧</b>投稿。你可以翻投稿、自己写/让 LLM 写/传 txt，挑一本<b>【编排】</b>：给角色选演员（缺角能 roll 个 NPC），角色读完会提意见/改戏，<b>【召唤导演】</b>整合成最终本，小人气泡<b>演一遍</b>，再收进历史舞台剧。</div>
                 </Block>
 
                 <Block title="邮局怎么玩（重点）" tone="rgba(243,208,138,.95)">
@@ -1670,6 +1690,7 @@ const RoomScene: React.FC<{
     const isGuestbook = roomId === 'guestbook';
     const isPostOffice = roomId === 'postoffice';
     const isGarden = roomId === 'garden';
+    const isTheater = roomId === 'theater';
     const [detail, setDetail] = useState<CharacterProfile | null>(null);
     const [musicState, setMusicState] = useState<VRMusicRoomState | null>(null);
     const [board, setBoard] = useState<VRGuestbookState | null>(null);
@@ -1839,6 +1860,9 @@ const RoomScene: React.FC<{
                 {/* 共享花田：花圃面板（种花 / 浇水） */}
                 {isGarden && <GardenPanel addToast={addToast} characters={characters} userName={userName} />}
 
+                {/* 剧院：话剧部门面板（投稿 / 编排 / 演出 / 历史） */}
+                {isTheater && <TheaterPanel addToast={addToast} />}
+
                 {/* chibi 站位（可隐藏，避免挡住留言墙等文字） */}
                 {!hideChibi && occupants.map((c, i) => {
                     const slot = slots[i % slots.length];
@@ -1851,7 +1875,7 @@ const RoomScene: React.FC<{
                         </div>
                     );
                 })}
-                {occupants.length === 0 && !isMusic && !isGuestbook && !isPostOffice && !isGarden && (
+                {occupants.length === 0 && !isMusic && !isGuestbook && !isPostOffice && !isGarden && !isTheater && (
                     <div className="absolute inset-0 flex items-center justify-center">
                         <p className="text-white/70 text-[12px] bg-black/30 rounded-full px-4 py-2">这个房间还没有人。去「接入」启用角色吧。</p>
                     </div>

@@ -608,7 +608,7 @@ export interface NovelBook {
 // =====================================================================
 
 /** 虚拟世界里的房间。 */
-export type VRRoomId = 'library' | 'music' | 'guestbook' | 'gym' | 'postoffice' | 'garden' | 'cafe';
+export type VRRoomId = 'library' | 'music' | 'guestbook' | 'gym' | 'postoffice' | 'garden' | 'theater' | 'cafe';
 
 /** 全局小说库里的一本书（所有角色共享原文，各自留批注、各自书签）。 */
 export interface VRWorldNovel {
@@ -845,6 +845,82 @@ export interface VRGardenState {
     id: string; // 'garden' 单例
     plants: VRGardenPlant[];
     updatedAt: number;
+}
+
+// ============ 剧院 / 话剧部门 ============
+
+/** 剧本里的一个登场角色（名字 + 大致性格，供选角匹配/演绎用）。 */
+export interface VRPlayRole {
+    name: string;
+    persona: string;
+}
+
+/** 一份投稿剧本（角色创作 / 用户写 / LLM 代写 / 上传）。 */
+export interface VRScript {
+    id: string;
+    title: string;
+    /** 一句话简介（"创作了关于 xxx 的舞台剧"用） */
+    logline: string;
+    roles: VRPlayRole[];
+    /** 完整剧本正文（固定格式：幕/场 + 角色台词 + （旁白）） */
+    body: string;
+    /** 作者 id：'user' | charId | 'llm' */
+    authorId: string;
+    authorName: string;
+    source: 'char' | 'user' | 'llm' | 'upload';
+    createdAt: number;
+}
+
+/** 编排时的 LLM 调用模式：逐角色各调一次（精准，N 次）/ 固定两次（省，可能 OOC）。 */
+export type VRStageMode = 'per-role' | 'two-call';
+
+/** 选角：剧本角色 → 演员（char 或 临时 NPC）。 */
+export interface VRCastAssign {
+    roleName: string;
+    actorId: string;   // charId | npc_xxx
+    actorName: string;
+    isNpc: boolean;
+    /** NPC 的捏脸立绘（透明 PNG dataUrl） */
+    npcChibi?: string;
+}
+
+/** 某演员读完剧本后给导演的意见（吐槽 / 改台词动作 / 配不配合）。 */
+export interface VRActorNote {
+    actorId: string;
+    actorName: string;
+    roleName: string;
+    /** 一句吐槽 / 想法（UI 展示） */
+    note: string;
+    /** 具体的台词/动作修改方案（可空） */
+    changes?: string;
+    /** 是否配合（角色自然选择，不诱导） */
+    cooperative: boolean;
+}
+
+/** 最终演出脚本的一拍（台词气泡 / 旁白 / 上场 / 下场）。 */
+export interface VRStageLine {
+    kind: 'line' | 'narration' | 'enter' | 'exit';
+    /** line/enter/exit 时是谁 */
+    actorName?: string;
+    /** 台词气泡内容 / 旁白文字 */
+    text: string;
+}
+
+/** 一场已收录的演出（导演整合后的成品 + 观众锐评 + 评级）。 */
+export interface VRStagedPlay {
+    id: string;
+    scriptId: string;
+    title: string;
+    logline: string;
+    cast: VRCastAssign[];
+    notes: VRActorNote[];
+    /** 导演整合后的可演出脚本 */
+    stage: VRStageLine[];
+    /** 赛博观众锐评 */
+    reviews: { critic: string; text: string }[];
+    /** 评级（如 S / A / ★★★★☆） */
+    rating: string;
+    createdAt: number;
 }
 
 /**
@@ -2031,6 +2107,8 @@ export interface FullBackupData {
     vrMusicRoom?: VRMusicRoomState;            // 听歌房共享状态
     vrGuestbook?: VRGuestbookState;            // 留言簿共享状态
     vrGarden?: VRGardenState;                  // 共享花田状态
+    vrScripts?: VRScript[];                     // 剧院·投稿剧本库
+    vrStagedPlays?: VRStagedPlay[];             // 剧院·历史舞台剧
     vrLetters?: VRLetter[];                    // 邮局信件（本地存档+队列）
     vrSettings?: any[];                        // 彼方设置（独立 API + 调用记录）
     vrPostOffice?: Record<string, string>;     // 邮局本机配置：身份 deviceId / 后端地址（存 localStorage）

@@ -7,12 +7,12 @@ import {
     GalleryImage, FullBackupData, GroupProfile, SocialPost, StudyCourse, GameSession, Worldbook, NovelBook, Emoji, EmojiCategory,
     BankTransaction, SavingsGoal, BankFullState, DollhouseState, XhsStockImage, XhsActivityRecord, SongSheet, QuizSession, GuidebookSession,
     LifeSimState, HandbookEntry, Tracker, TrackerEntry, HotNewsSnapshot,
-    VRWorldNovel, VRNovelAnnotation, CustomCreatorPart, VRMusicRoomState, VRGuestbookState, VRGardenState, VRLetter
+    VRWorldNovel, VRNovelAnnotation, CustomCreatorPart, VRMusicRoomState, VRGuestbookState, VRGardenState, VRScript, VRStagedPlay, VRLetter
 } from '../types';
 import { exportPostOfficeLocal, importPostOfficeLocal } from './vrWorld/postOffice';
 
 const DB_NAME = 'AetherOS_Data';
-const DB_VERSION = 59; // Bumped: v59 add 'vr_garden' store (彼方·共享花田单例状态)
+const DB_VERSION = 60; // Bumped: v60 add 'vr_scripts' + 'vr_plays' stores (彼方·剧院 剧本库/历史舞台剧)
 
 const STORE_CHARACTERS = 'characters';
 const STORE_MESSAGES = 'messages';
@@ -54,6 +54,8 @@ const STORE_CC_PARTS = 'cc_custom_parts';         // 捏脸系统自定义部件
 const STORE_VR_MUSIC = 'vr_music';                // 听歌房共享状态（单例 nowPlaying + 循环队列）
 const STORE_VR_GUESTBOOK = 'vr_guestbook';        // 留言簿共享版聊墙（单例 messages）
 const STORE_VR_GARDEN = 'vr_garden';              // 共享花田（单例 plants，id='garden'）
+const STORE_VR_SCRIPTS = 'vr_scripts';            // 剧院·投稿剧本库（每份剧本一条）
+const STORE_VR_PLAYS = 'vr_plays';                // 剧院·历史舞台剧（每场演出一条）
 const STORE_VR_LETTERS = 'vr_letters';            // 邮局信件（本地存档 + 待寄出/待回复队列）
 const STORE_VR_SETTINGS = 'vr_settings';          // 彼方设置单例：独立 API（id='api'）+ 调用记录（id='apilog'）
 const STORE_API_CALL_LOG = 'api_call_log';        // 全局 API 调用记录单例（id='log'，保留近 5 天）
@@ -227,6 +229,8 @@ export const openDB = (): Promise<IDBDatabase> => {
       createStore(STORE_VR_MUSIC, { keyPath: 'id' });
       createStore(STORE_VR_GUESTBOOK, { keyPath: 'id' });
       createStore(STORE_VR_GARDEN, { keyPath: 'id' });
+      createStore(STORE_VR_SCRIPTS, { keyPath: 'id' });
+      createStore(STORE_VR_PLAYS, { keyPath: 'id' });
       if (!db.objectStoreNames.contains(STORE_VR_LETTERS)) {
           const ltStore = db.createObjectStore(STORE_VR_LETTERS, { keyPath: 'id' });
           ltStore.createIndex('box', 'box', { unique: false });
@@ -1648,6 +1652,44 @@ export const DB = {
       transaction.objectStore(STORE_VR_GARDEN).put({ ...state, id: 'garden' });
   },
 
+  // --- 剧院·投稿剧本库 ---
+  getVRScripts: async (): Promise<VRScript[]> => {
+      const db = await openDB();
+      if (!db.objectStoreNames.contains(STORE_VR_SCRIPTS)) return [];
+      return new Promise((resolve) => {
+          const request = db.transaction(STORE_VR_SCRIPTS, 'readonly').objectStore(STORE_VR_SCRIPTS).getAll();
+          request.onsuccess = () => resolve((request.result || []).sort((a: VRScript, b: VRScript) => b.createdAt - a.createdAt));
+          request.onerror = () => resolve([]);
+      });
+  },
+  saveVRScript: async (script: VRScript): Promise<void> => {
+      const db = await openDB();
+      db.transaction(STORE_VR_SCRIPTS, 'readwrite').objectStore(STORE_VR_SCRIPTS).put(script);
+  },
+  deleteVRScript: async (id: string): Promise<void> => {
+      const db = await openDB();
+      db.transaction(STORE_VR_SCRIPTS, 'readwrite').objectStore(STORE_VR_SCRIPTS).delete(id);
+  },
+
+  // --- 剧院·历史舞台剧 ---
+  getVRStagedPlays: async (): Promise<VRStagedPlay[]> => {
+      const db = await openDB();
+      if (!db.objectStoreNames.contains(STORE_VR_PLAYS)) return [];
+      return new Promise((resolve) => {
+          const request = db.transaction(STORE_VR_PLAYS, 'readonly').objectStore(STORE_VR_PLAYS).getAll();
+          request.onsuccess = () => resolve((request.result || []).sort((a: VRStagedPlay, b: VRStagedPlay) => b.createdAt - a.createdAt));
+          request.onerror = () => resolve([]);
+      });
+  },
+  saveVRStagedPlay: async (play: VRStagedPlay): Promise<void> => {
+      const db = await openDB();
+      db.transaction(STORE_VR_PLAYS, 'readwrite').objectStore(STORE_VR_PLAYS).put(play);
+  },
+  deleteVRStagedPlay: async (id: string): Promise<void> => {
+      const db = await openDB();
+      db.transaction(STORE_VR_PLAYS, 'readwrite').objectStore(STORE_VR_PLAYS).delete(id);
+  },
+
   // --- 邮局信件 ---
   getVRLetters: async (): Promise<VRLetter[]> => {
       const db = await openDB();
@@ -1969,7 +2011,7 @@ export const DB = {
           });
       };
 
-      const [characters, messages, themes, emojis, emojiCategories, assets, galleryImages, userProfiles, diaries, tasks, anniversaries, roomTodos, roomNotes, groups, journalStickers, socialPosts, courses, games, worldbooks, novels, bankTx, bankData, xhsActivities, xhsStockImages, songs, quizzes, guidebookSessions, scheduledMessages, lifeSimStates, handbooks, trackers, trackerEntries, hotNewsSnapshots, vrNovels, vrAnnotations, customCreatorParts, vrMusic, vrGuestbook, vrGarden, vrLetters, vrSettings] = await Promise.all([
+      const [characters, messages, themes, emojis, emojiCategories, assets, galleryImages, userProfiles, diaries, tasks, anniversaries, roomTodos, roomNotes, groups, journalStickers, socialPosts, courses, games, worldbooks, novels, bankTx, bankData, xhsActivities, xhsStockImages, songs, quizzes, guidebookSessions, scheduledMessages, lifeSimStates, handbooks, trackers, trackerEntries, hotNewsSnapshots, vrNovels, vrAnnotations, customCreatorParts, vrMusic, vrGuestbook, vrGarden, vrScripts, vrStagedPlays, vrLetters, vrSettings] = await Promise.all([
           getAllFromStore(STORE_CHARACTERS),
           getAllFromStore(STORE_MESSAGES),
           getAllFromStore(STORE_THEMES),
@@ -2009,6 +2051,8 @@ export const DB = {
           getAllFromStore(STORE_VR_MUSIC),
           getAllFromStore(STORE_VR_GUESTBOOK),
           getAllFromStore(STORE_VR_GARDEN),
+          getAllFromStore(STORE_VR_SCRIPTS),
+          getAllFromStore(STORE_VR_PLAYS),
           getAllFromStore(STORE_VR_LETTERS),
           getAllFromStore(STORE_VR_SETTINGS),
       ]);
@@ -2044,6 +2088,8 @@ export const DB = {
           vrMusicRoom: vrMusic && vrMusic.length ? vrMusic[0] : undefined,
           vrGuestbook: vrGuestbook && vrGuestbook.length ? vrGuestbook[0] : undefined,
           vrGarden: vrGarden && vrGarden.length ? vrGarden[0] : undefined,
+          vrScripts,
+          vrStagedPlays,
           vrLetters,
           vrSettings,
           vrPostOffice: exportPostOfficeLocal(), // 邮局本机配置（身份/后端地址，存 localStorage）
@@ -2082,7 +2128,7 @@ export const DB = {
           STORE_TRACKERS,
           STORE_TRACKER_ENTRIES,
           STORE_HOTNEWS,
-          STORE_VR_NOVELS, STORE_VR_ANNOTATIONS, STORE_CC_PARTS, STORE_VR_MUSIC, STORE_VR_GUESTBOOK, STORE_VR_GARDEN, STORE_VR_LETTERS, STORE_VR_SETTINGS,
+          STORE_VR_NOVELS, STORE_VR_ANNOTATIONS, STORE_CC_PARTS, STORE_VR_MUSIC, STORE_VR_GUESTBOOK, STORE_VR_GARDEN, STORE_VR_SCRIPTS, STORE_VR_PLAYS, STORE_VR_LETTERS, STORE_VR_SETTINGS,
           'memory_nodes', 'memory_vectors', 'memory_links', 'topic_boxes', 'anticipations', 'event_boxes',
           'memory_batches', 'pixel_home_assets', 'pixel_home_layouts'
       ].filter(name => db.objectStoreNames.contains(name));
@@ -2165,6 +2211,8 @@ export const DB = {
           data.vrMusicRoom !== undefined,
           data.vrGuestbook !== undefined,
           data.vrGarden !== undefined,
+          data.vrScripts !== undefined,
+          data.vrStagedPlays !== undefined,
           data.vrLetters !== undefined,
           (data as any).vrPostOffice !== undefined,
           data.pixelHomeAssets !== undefined,
@@ -2420,6 +2468,14 @@ export const DB = {
           if (hasStore(STORE_VR_GARDEN) && data.vrGarden) await DB.saveVRGarden(data.vrGarden);
           data.vrGarden = undefined as any;
       }, 1);
+      await runSection('剧院剧本', data.vrScripts !== undefined, async () => {
+          if (hasStore(STORE_VR_SCRIPTS) && Array.isArray(data.vrScripts)) for (const s of data.vrScripts) await DB.saveVRScript(s);
+          data.vrScripts = undefined as any;
+      }, data.vrScripts?.length || 0);
+      await runSection('历史舞台剧', data.vrStagedPlays !== undefined, async () => {
+          if (hasStore(STORE_VR_PLAYS) && Array.isArray(data.vrStagedPlays)) for (const p of data.vrStagedPlays) await DB.saveVRStagedPlay(p);
+          data.vrStagedPlays = undefined as any;
+      }, data.vrStagedPlays?.length || 0);
       await runSection('邮局信件', data.vrLetters !== undefined, async () => {
           await clearAndAdd(STORE_VR_LETTERS, data.vrLetters, '邮局信件', false);
           data.vrLetters = undefined as any;
