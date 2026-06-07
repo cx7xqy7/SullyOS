@@ -702,7 +702,10 @@ export const ValentineSession: React.FC<ValentineSessionProps> = ({ charId, onCl
     // ----- 角色选择界面 -----
     if (phase === 'select') {
         return (
-            <div className="fixed inset-0 z-[9997] bg-gradient-to-b from-pink-50 via-white to-rose-50 flex flex-col animate-fade-in">
+            <div
+                className="fixed inset-0 z-[9997] bg-gradient-to-b from-pink-50 via-white to-rose-50 flex flex-col animate-fade-in"
+                style={{ paddingTop: 'var(--safe-top)', paddingBottom: 'var(--safe-bottom)' }}
+            >
                 <div className="h-16 flex items-center justify-between px-4 border-b border-pink-100 bg-white/80 backdrop-blur-sm shrink-0">
                     <button onClick={onClose} className="p-2 -ml-2 rounded-full hover:bg-pink-50">
                         <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor" className="w-6 h-6 text-slate-600"><path strokeLinecap="round" strokeLinejoin="round" d="M15.75 19.5 8.25 12l7.5-7.5" /></svg>
@@ -856,7 +859,11 @@ export const ValentineSession: React.FC<ValentineSessionProps> = ({ charId, onCl
     const isFinished = isLastLine && !isAnimating;
 
     return (
-        <div className="fixed inset-0 z-[9997] bg-black overflow-hidden select-none" onClick={handleScreenClick}>
+        <div
+            className="fixed inset-0 z-[9997] bg-black overflow-hidden select-none"
+            style={{ paddingTop: 'var(--safe-top)', paddingBottom: 'var(--safe-bottom)' }}
+            onClick={handleScreenClick}
+        >
             {/* 背景 */}
             <div className="absolute inset-0 bg-gradient-to-b from-[#1a0a1e] via-[#0d0a1a] to-[#0a0510] opacity-90" />
 

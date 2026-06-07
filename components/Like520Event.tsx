@@ -261,6 +261,9 @@ const LIKE520_CSS = `
   width: 100%;
   height: 100%;
   overflow: hidden;
+  /* iOS 全屏 PWA 安全区：让顶栏/底栏/抽屉等 immersive UI 自动避开刘海和 home 条 */
+  padding-top: var(--safe-top);
+  padding-bottom: var(--safe-bottom);
   font-family: 'Noto Serif SC', 'Cormorant Garamond', serif;
   color: var(--ink);
   background:
@@ -3391,7 +3394,10 @@ export const Like520Session: React.FC<SessionProps> = ({ charId, onClose }) => {
             )}
 
             {phase === 'char_creator' && (
-                <div className="absolute inset-0">
+                <div
+                    className="absolute inset-0"
+                    style={{ paddingTop: 'var(--safe-top)', paddingBottom: 'var(--safe-bottom)' }}
+                >
                     <CreatorIframe
                         mode="char"
                         charName={char.name}
@@ -3424,7 +3430,10 @@ export const Like520Session: React.FC<SessionProps> = ({ charId, onClose }) => {
             )}
 
             {phase === 'user_creator' && (
-                <div className="absolute inset-0">
+                <div
+                    className="absolute inset-0"
+                    style={{ paddingTop: 'var(--safe-top)', paddingBottom: 'var(--safe-bottom)' }}
+                >
                     <CreatorIframe
                         mode="user"
                         charName={char.name}
