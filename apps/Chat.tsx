@@ -20,6 +20,7 @@ import ProactiveSettingsModal from '../components/chat/ProactiveSettingsModal';
 import ThinkingChainSettingsModal from '../components/chat/ThinkingChainSettingsModal';
 import { useChatAI } from '../hooks/useChatAI';
 import { synthesizeSpeechDetailed, cleanTextForTts } from '../utils/minimaxTts';
+import { resolveMiniMaxApiKey } from '../utils/minimaxApiKey';
 import { isInstantConfigReady, loadInstantConfig } from '../utils/instantPushClient';
 
 const VOICE_LANG_LABELS: Record<string, string> = { en: 'English', ja: '日本語', ko: '한국어', fr: 'Français', es: 'Español' };
@@ -196,6 +197,16 @@ const Chat: React.FC = () => {
     const prevIsTypingRef = useRef(false);
     // Track blob: URLs we created so we can revoke them on character switch / unmount.
     const voiceBlobUrlsRef = useRef<Set<string>>(new Set());
+    // We warn the user at most once (per character) that MiniMax voice isn't configured —
+    // a character can produce many <语音> messages and we don't want to spam toasts.
+    const minimaxWarnedRef = useRef(false);
+
+    /** Whether this character can synthesize real voice (MiniMax key + a voice profile). */
+    const isMinimaxReady = useCallback(() => {
+        const vp = char.voiceProfile;
+        const hasVoiceProfile = !!(vp?.voiceId || (vp?.timberWeights && vp.timberWeights.length > 0));
+        return hasVoiceProfile && !!resolveMiniMaxApiKey(apiConfig);
+    }, [char, apiConfig]);
 
     const persistVoice = async (msgId: number, url: string, blob: Blob | null, originalText: string, spokenText: string | undefined, lang: string | undefined) => {
         try {
@@ -268,6 +279,18 @@ const Chat: React.FC = () => {
 
         // Auto-TTS: only generate voice when AI explicitly used <语音> tag
         if (autoTriggered && !voiceTagContent) return;
+
+        // MiniMax not configured for this character: don't attempt synthesis (it would
+        // throw and surface an error toast on every message / every tap). Instead remind
+        // the user just once — the <语音> bubble still shows its 转文字 button so the
+        // text stays readable, matching real voice messages.
+        if (!isMinimaxReady()) {
+            if (!autoTriggered && !minimaxWarnedRef.current) {
+                minimaxWarnedRef.current = true;
+                addToast('该角色未配置 MiniMax 语音，无法播放真实语音，可点「转文字」查看内容', 'info');
+            }
+            return;
+        }
 
         setVoiceLoading(prev => new Set(prev).add(msg.id));
         try {
@@ -443,6 +466,8 @@ const Chat: React.FC = () => {
 
     // Revoke blob URLs when switching characters / unmounting to avoid leaks.
     useEffect(() => {
+        // Reset the "MiniMax not configured" warning so each character gets one reminder.
+        minimaxWarnedRef.current = false;
         const urls = voiceBlobUrlsRef.current;
         return () => {
             urls.forEach(u => { try { URL.revokeObjectURL(u); } catch { /* ignore */ } });
