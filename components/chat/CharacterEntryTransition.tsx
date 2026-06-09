@@ -59,17 +59,17 @@ const CharacterEntryTransition: React.FC<Props> = ({ name, avatar, onDone }) => 
         @keyframes charLineIn { from { opacity:0; transform: scaleX(0) } to { opacity:.7; transform: scaleX(1) } }
       `}</style>
 
-      {/* 氛围底：虚化头像 = ta 的色彩世界（静态 blur，只栅格化一次；仅 opacity 淡入）。无头像时回退主题色光场。 */}
+      {/* 氛围底：虚化头像 = ta 的色彩世界（静态 blur，只栅格化一次）。
+          关键：不做淡入 —— showEntry 一为真就「立刻」铺满盖住聊天，否则透明期会透出底下聊天界面，
+          变成「聊天先闪一下，过场才淡进来」的本末倒置。无头像时回退主题色光场。 */}
       {avatarBg ? (
         <div className="absolute inset-0 bg-cover bg-center" style={{
           background: avatarBg, backgroundSize: 'cover', backgroundPosition: 'center',
           filter: 'blur(26px)', transform: 'scale(1.16)',
-          animation: 'charVeilIn 320ms ease-out both',
         }} />
       ) : (
         <div className="absolute inset-0" style={{
           background: 'radial-gradient(120% 100% at 50% 40%, hsla(var(--primary-hue),55%,40%,0.9), #0c0b1e 70%)',
-          animation: 'charVeilIn 320ms ease-out both',
         }} />
       )}
       {/* 压暗 + 暗角：让中心头像与名字清晰浮出（静态） */}
