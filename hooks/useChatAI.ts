@@ -19,6 +19,8 @@ import type { DigestResult } from '../utils/memoryPalace';
 // UI 钩子工具 propose_cart_items。MCP 实际调用都在 McdMiniApp 组件内做, useChatAI
 // 不再 import callMcdTool / normalizeMcdToolName / isMcdConfigured / 旧 prompt。
 import { MCD_PROPOSE_TOOL, autoFixProposalCodesByName } from '../utils/mcdToolBridge';
+// 瑞幸: 与麦当劳同构, 只读 LuckinMiniApp 快照注入 + propose_cart_items UI 钩子工具
+import { LUCKIN_PROPOSE_TOOL, autoFixProposalCodesByName as autoFixLuckinProposalCodesByName } from '../utils/luckinToolBridge';
 import { buildChatRequestPayload } from '../utils/chatRequestPayload';
 import {
     isInstantConfigReady,
@@ -331,6 +333,8 @@ interface UseChatAIProps {
     updateCharacter?: (id: string, partial: Partial<CharacterProfile>) => void;
     /** 麦当劳小程序当前快照 (cart/menu/nutrition); open=true 时把这段实时状态追加到 system prompt 末尾, 让 char 协同选餐 */
     mcdMiniAppRef?: MutableRefObject<import('../utils/mcdToolBridge').McdMiniAppSnapshot | undefined>;
+    /** 瑞幸小程序当前快照 (cart/menu); 与麦当劳同构 */
+    luckinMiniAppRef?: MutableRefObject<import('../utils/luckinToolBridge').LuckinMiniAppSnapshot | undefined>;
 }
 
 export const useChatAI = ({
@@ -348,6 +352,7 @@ export const useChatAI = ({
     memoryPalaceConfig,
     updateCharacter,
     mcdMiniAppRef,
+    luckinMiniAppRef,
 }: UseChatAIProps) => {
     
     // 音乐上下文 — 用于聊天时注入"user 正在听什么 + 当前歌词窗口"
@@ -416,11 +421,11 @@ export const useChatAI = ({
     // 重建 listener (切角色), 避免 music 每秒 tick 一次都 remove+addEventListener.
     const emotionEvalDepsRef = useRef({
         userProfile, groups, emojis, categories, realtimeConfig, apiConfig,
-        translationConfig, music, mcdMiniAppRef, evolvedNarrative,
+        translationConfig, music, mcdMiniAppRef, luckinMiniAppRef, evolvedNarrative,
     });
     emotionEvalDepsRef.current = {
         userProfile, groups, emojis, categories, realtimeConfig, apiConfig,
-        translationConfig, music, mcdMiniAppRef, evolvedNarrative,
+        translationConfig, music, mcdMiniAppRef, luckinMiniAppRef, evolvedNarrative,
     };
 
     useEffect(() => {
@@ -453,6 +458,8 @@ export const useChatAI = ({
                 // + cleanedApiMessages 跟 主 API 调用看到的几乎完全一致 (差别仅在 music live snapshot 时序).
                 const mcdMiniSnap = deps.mcdMiniAppRef?.current;
                 const mcdMiniOpen = !!mcdMiniSnap?.open;
+                const luckinMiniSnap = deps.luckinMiniAppRef?.current;
+                const luckinMiniOpen = !!luckinMiniSnap?.open;
                 const payload = await buildChatRequestPayload({
                     char,
                     userProfile: deps.userProfile,
@@ -475,6 +482,7 @@ export const useChatAI = ({
                     htmlMode: { enabled: !!(char as any).htmlModeEnabled, customPrompt: (char as any).htmlModeCustomPrompt },
                     thinkingChain: { enabled: !!(char as any).showThinkingChain, customPrompt: (char as any).thinkingChainCustomPrompt },
                     mcdMiniSnap: mcdMiniOpen ? mcdMiniSnap : undefined,
+                    luckinMiniSnap: luckinMiniOpen ? luckinMiniSnap : undefined,
                 });
 
                 if (payload.flags.promptBuildSkipped) {
@@ -616,6 +624,8 @@ export const useChatAI = ({
             const mcdMiniSnap = mcdMiniAppRef?.current;
             const mcdMiniOpen = !!mcdMiniSnap?.open;
             const mcdInheritMeta = mcdMiniOpen ? { fromMcdMiniApp: true } : undefined;
+            const luckinMiniSnap = luckinMiniAppRef?.current;
+            const luckinMiniOpen = !!luckinMiniSnap?.open;
 
             const payload = await stageT('payload', buildChatRequestPayload({
                 char, userProfile, groups, emojis, categories,
@@ -655,6 +665,7 @@ export const useChatAI = ({
                 htmlMode: { enabled: !!(char as any).htmlModeEnabled, customPrompt: (char as any).htmlModeCustomPrompt },
                 thinkingChain: { enabled: !!(char as any).showThinkingChain, customPrompt: (char as any).thinkingChainCustomPrompt },
                 mcdMiniSnap: mcdMiniOpen ? mcdMiniSnap : undefined,
+                luckinMiniSnap: luckinMiniOpen ? luckinMiniSnap : undefined,
             }));
             const systemPrompt = payload.systemPrompt;
             const cleanedApiMessages = payload.cleanedApiMessages;
@@ -662,6 +673,9 @@ export const useChatAI = ({
             const promptBuildSkipped = payload.flags.promptBuildSkipped;
             if (payload.flags.mcdActive) {
                 console.log(`🍔 [MCD-MiniApp] 注入协同点餐上下文 step=${mcdMiniSnap?.step} cartItems=${mcdMiniSnap?.cart?.length || 0} menuItems=${mcdMiniSnap?.menuMeals ? Object.keys(mcdMiniSnap.menuMeals).length : 0} nutrition=${mcdMiniSnap?.nutritionData ? mcdMiniSnap.nutritionData.length : 0}字`);
+            }
+            if (payload.flags.luckinActive) {
+                console.log(`☕ [Luckin-MiniApp] 注入协同点单上下文 step=${luckinMiniSnap?.step} cartItems=${luckinMiniSnap?.cart?.length || 0} menuItems=${luckinMiniSnap?.menuItems ? Object.keys(luckinMiniSnap.menuItems).length : 0}`);
             }
             const bilingualActive = payload.flags.bilingualActive;
 
@@ -767,6 +781,9 @@ export const useChatAI = ({
             // 工具不真改购物车也不调 MCP, 只是把推荐渲染成 + 加按钮卡片让用户决定
             if (payload.flags.mcdActive) {
                 baseReqBody.tools = [MCD_PROPOSE_TOOL];
+                baseReqBody.tool_choice = 'auto';
+            } else if (payload.flags.luckinActive) {
+                baseReqBody.tools = [LUCKIN_PROPOSE_TOOL];
                 baseReqBody.tool_choice = 'auto';
             }
 
@@ -924,6 +941,99 @@ export const useChatAI = ({
                     });
                     updateTokenUsage(data, historyMsgCount, `mcd-propose-${it + 1}`);
                     // 第二轮跳过 (我们已经禁用了 tools)
+                    if (!data.choices?.[0]?.message?.tool_calls?.length) break;
+                }
+            }
+
+            // 3.5 瑞幸小程序 propose_cart_items UI 钩子工具循环 (与麦当劳同构)
+            if (payload.flags.luckinActive && data.choices?.[0]?.message?.tool_calls?.length) {
+                const MAX_PROPOSE_LOOPS = 3;
+                let loopMessages = [...fullMessages];
+                for (let it = 0; it < MAX_PROPOSE_LOOPS; it++) {
+                    const toolCalls = data.choices?.[0]?.message?.tool_calls;
+                    if (!toolCalls || !toolCalls.length) break;
+                    loopMessages.push({
+                        role: 'assistant',
+                        content: data.choices[0].message.content || '',
+                        tool_calls: toolCalls,
+                    } as any);
+                    for (const tc of toolCalls) {
+                        const fname: string = tc.function?.name || '';
+                        let args: any = {};
+                        try {
+                            const raw = tc.function?.arguments ?? tc.arguments;
+                            args = typeof raw === 'string' ? (raw ? JSON.parse(raw) : {}) : (raw || {});
+                        } catch (e) {
+                            console.warn('☕ [Luckin-MiniApp] propose 参数解析失败:', e);
+                        }
+                        if (fname === 'propose_cart_items' && Array.isArray(args.items) && args.items.length) {
+                            const menu = luckinMiniSnap?.menuItems || {};
+                            const menuKeys = Object.keys(menu);
+                            if (menuKeys.length === 0) {
+                                loopMessages.push({
+                                    role: 'tool',
+                                    tool_call_id: tc.id,
+                                    content: `菜单还没加载 (用户当前在选模式 / 选门店阶段)。请先用文字陪用户聊, 等菜单加载出来、出现"当前门店在售"清单后再调 propose_cart_items, code 必须从清单里挑。`,
+                                } as any);
+                                continue;
+                            }
+                            const { fixed, fixes } = autoFixLuckinProposalCodesByName(args.items, menu);
+                            if (fixes.length) {
+                                console.log(`☕ [Luckin-MiniApp] propose 自动修 ${fixes.length} 个 code:`,
+                                    fixes.map(f => `'${f.from}' → '${f.to}' (${f.name})`).join(', '));
+                            }
+                            args.items = fixed;
+                            const invalidItems = args.items.filter((it: any) => !it?.code || !(menu as any)[it.code]);
+                            if (invalidItems.length > 0) {
+                                const sample = menuKeys.slice(0, 20).map(k => `${k}=${(menu as any)[k]?.name || ''}`).join(', ');
+                                const bad = invalidItems.map((i: any) => `'${i.code}'(${i.name || '?'})`).join(', ');
+                                loopMessages.push({
+                                    role: 'tool',
+                                    tool_call_id: tc.id,
+                                    content: `propose_cart_items 里这些 code/name 在菜单里找不到匹配: ${bad}。这些商品本店不卖, 别推。当前菜单可用 code 示例: ${sample}。请只从菜单里挑实际有的, 重新调一次 propose。`,
+                                } as any);
+                                continue;
+                            }
+                            try {
+                                await DB.saveMessage({
+                                    charId: char.id,
+                                    role: 'assistant',
+                                    type: 'luckin_card',
+                                    content: `${args.items.length} 件推荐`,
+                                    metadata: {
+                                        luckinCardKind: 'proposal',
+                                        luckinProposal: args,
+                                        fromLuckinMiniApp: true,
+                                    },
+                                } as any);
+                                setMessages(await DB.getRecentMessagesByCharId(char.id, 200));
+                            } catch (e) {
+                                console.warn('☕ [Luckin-MiniApp] 保存 proposal 失败:', e);
+                            }
+                            const ackExtra = fixes.length
+                                ? ` (我帮你把 ${fixes.length} 个 code 按名字校准到了菜单里真实的 code)`
+                                : '';
+                            loopMessages.push({
+                                role: 'tool',
+                                tool_call_id: tc.id,
+                                content: `OK 已把推荐展示给用户, 用户可以点 + 加进购物车${ackExtra}`,
+                            } as any);
+                        } else {
+                            loopMessages.push({
+                                role: 'tool',
+                                tool_call_id: tc.id,
+                                content: `工具 ${fname} 调用形态不对, 期望 {items: [{code, name, qty, reason?}]}; 你这次给的是 ${JSON.stringify(args).slice(0, 200)}`,
+                            } as any);
+                        }
+                    }
+                    const followBody = { ...baseReqBody, messages: loopMessages };
+                    delete followBody.tools;
+                    delete followBody.tool_choice;
+                    data = await safeFetchJson(`${baseUrl}/chat/completions`, {
+                        method: 'POST', headers,
+                        body: JSON.stringify(followBody)
+                    });
+                    updateTokenUsage(data, historyMsgCount, `luckin-propose-${it + 1}`);
                     if (!data.choices?.[0]?.message?.tool_calls?.length) break;
                 }
             }

@@ -9,8 +9,11 @@ import { formatMessageWithTime } from '../utils/messageFormat';
 import { XhsMcpClient, extractNotesFromMcpData, normalizeNote } from '../utils/xhsMcpClient';
 import { isMcdConfigured } from '../utils/mcdMcpClient';
 import { isMcdActivatedInMessages, MCD_ACTIVATE_TRIGGER, MCD_DEACTIVATE_TRIGGER } from '../utils/mcdToolBridge';
+import { isLuckinConfigured } from '../utils/luckinMcpClient';
+import { isLuckinActivatedInMessages, LUCKIN_ACTIVATE_TRIGGER, LUCKIN_DEACTIVATE_TRIGGER } from '../utils/luckinToolBridge';
 import MessageItem from '../components/chat/MessageItem';
 import McdMiniApp from '../components/mcd/McdMiniApp';
+import LuckinMiniApp from '../components/luckin/LuckinMiniApp';
 import { PRESET_THEMES, DEFAULT_ARCHIVE_PROMPTS } from '../components/chat/ChatConstants';
 import ChatHeader from '../components/chat/ChatHeaderShell';
 import ChatInputArea from '../components/chat/ChatInputArea';
@@ -163,6 +166,7 @@ const Chat: React.FC = () => {
 
     // 小程序快照 ref: MiniApp 状态变化时塞进来, useChatAI 在 build system prompt 时读取并注入
     const mcdMiniAppRef = useRef<import('../utils/mcdToolBridge').McdMiniAppSnapshot | undefined>(undefined);
+    const luckinMiniAppRef = useRef<import('../utils/luckinToolBridge').LuckinMiniAppSnapshot | undefined>(undefined);
 
     // --- Initialize Hook ---
     const { isTyping, recallStatus, searchStatus, diaryStatus, emotionStatus, memoryPalaceStatus, memoryPalaceResult, setMemoryPalaceResult, lastDigestResult, setLastDigestResult, lastTokenUsage, tokenBreakdown, setLastTokenUsage, triggerAI, startProactiveChat, stopProactiveChat, isProactiveActive } = useChatAI({
@@ -181,6 +185,7 @@ const Chat: React.FC = () => {
             : undefined,
         memoryPalaceConfig,
         mcdMiniAppRef,
+        luckinMiniAppRef,
         updateCharacter,
     });
 
@@ -812,6 +817,18 @@ const Chat: React.FC = () => {
             return;
         }
 
+        // 用户手打"瑞幸请求" → 拉起瑞幸点单小程序 (与麦当劳同构)
+        if (!customContent && type === 'text' && text === LUCKIN_ACTIVATE_TRIGGER) {
+            setInput(''); localStorage.removeItem(draftKey);
+            if (!isLuckinConfigured()) {
+                addToast('请先到设置 → 瑞幸 启用并填入 MCP Token', 'info');
+                return;
+            }
+            setLuckinAppOpen(true);
+            setShowPanel('none');
+            return;
+        }
+
         if (!customContent) { setInput(''); localStorage.removeItem(draftKey); }
         
         if (type === 'image') {
@@ -954,6 +971,15 @@ const Chat: React.FC = () => {
             case 'mcd-end':
                 handleSendText(MCD_DEACTIVATE_TRIGGER, 'text', { mcdDeactivate: true });
                 break;
+            case 'luckin-not-configured':
+                addToast('请先到设置 → 瑞幸 启用并填入 MCP Token', 'info');
+                break;
+            case 'luckin-request':
+                setLuckinAppOpen(true);
+                break;
+            case 'luckin-end':
+                handleSendText(LUCKIN_DEACTIVATE_TRIGGER, 'text', { luckinDeactivate: true });
+                break;
             case 'html-mode-toggle': {
                 if (!char) break;
                 const next = !((char as any).htmlModeEnabled);
@@ -984,6 +1010,11 @@ const Chat: React.FC = () => {
     const [mcdAppOpen, setMcdAppOpen] = useState(false);
     // mcdMiniAppRef 声明在文件靠前 (传给 useChatAI), 这里仅占位
     const mcdConfiguredFlag = useMemo(() => isMcdConfigured(), [showPanel, mcdActivated]);
+
+    // 瑞幸: 与麦当劳同构
+    const luckinActivated = useMemo(() => isLuckinActivatedInMessages(messages), [messages]);
+    const [luckinAppOpen, setLuckinAppOpen] = useState(false);
+    const luckinConfiguredFlag = useMemo(() => isLuckinConfigured(), [showPanel, luckinActivated]);
 
     // 用户在菜单卡里点"发送给角色"时, 把购物车作为 user 消息插入
     const handleMcdSendCart = useCallback(async (items: import('../components/chat/McdCard').McdCartItem[]) => {
@@ -1076,6 +1107,96 @@ const Chat: React.FC = () => {
                 mcdCardKind: 'cart',
                 mcdCartItems: items,
                 mcdOrderContext: ctx,
+            },
+        } as any);
+        await reloadMessages(visibleCountRef.current);
+    }, [char, reloadMessages]);
+
+    // ─── 瑞幸 handlers (与麦当劳同构) ───
+    const handleLuckinSendCart = useCallback(async (items: import('../components/chat/LuckinCard').LuckinCartItem[]) => {
+        if (!char || !items.length) return;
+        const summary = items.map(i => `${i.name}×${i.qty}`).join('、');
+        const total = items.reduce((s, c) => {
+            const p = typeof c.price === 'string' ? parseFloat(c.price) : (typeof c.price === 'number' ? c.price : 0);
+            return s + (isFinite(p) ? p * c.qty : 0);
+        }, 0);
+        const totalStr = total > 0 ? ` 共¥${total.toFixed(2)}` : '';
+        const content = `想要下单：${summary}${totalStr}`;
+        await DB.saveMessage({
+            charId: char.id,
+            role: 'user',
+            type: 'luckin_card',
+            content,
+            metadata: { luckinCardKind: 'cart', luckinCartItems: items },
+        } as any);
+        await reloadMessages(visibleCountRef.current);
+    }, [char, reloadMessages]);
+
+    const handleLuckinCandidate = useCallback(async (item: import('../components/chat/LuckinCard').LuckinCartItem) => {
+        if (!char || !item) return;
+        const priceStr = (typeof item.price === 'number' || (typeof item.price === 'string' && item.price)) ? ` ¥${item.price}` : '';
+        const content = `「${item.name}」${priceStr}—— 这个怎么样？`;
+        await DB.saveMessage({
+            charId: char.id,
+            role: 'user',
+            type: 'luckin_card',
+            content,
+            metadata: { luckinCardKind: 'candidate', luckinCandidate: item },
+        } as any);
+        await reloadMessages(visibleCountRef.current);
+    }, [char, reloadMessages]);
+
+    const handleLuckinMiniAppSend = useCallback(async (text: string) => {
+        if (!char || !text.trim() || isTyping) return;
+        const trimmed = text.trim();
+        await DB.saveMessage({
+            charId: char.id,
+            role: 'user',
+            type: 'text',
+            content: trimmed,
+            metadata: { fromLuckinMiniApp: true },
+        } as any);
+        const recent = await DB.getRecentMessagesByCharId(char.id, 200);
+        setMessages(recent);
+        triggerAI(recent);
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [char, isTyping, triggerAI]);
+
+    const handleLuckinMiniAppStateChange = useCallback((state: import('../utils/luckinToolBridge').LuckinMiniAppSnapshot) => {
+        luckinMiniAppRef.current = state;
+    }, []);
+
+    const handleLuckinAppConfirm = useCallback(async (
+        cart: import('../components/luckin/LuckinMiniApp').CartLine[],
+        ctx: import('../components/luckin/LuckinMiniApp').OrderContext,
+    ) => {
+        if (!char || !cart.length) return;
+        const items: import('../components/chat/LuckinCard').LuckinCartItem[] = cart.map(l => ({
+            code: l.code,
+            name: l.name,
+            price: l.price,
+            qty: l.qty,
+            spec: l.spec,
+        }));
+        const summary = items.map(i => `${i.name}×${i.qty}`).join('、');
+        const total = items.reduce((s, c) => {
+            const p = typeof c.price === 'string' ? parseFloat(c.price) : (typeof c.price === 'number' ? c.price : 0);
+            return s + (isFinite(p) ? p * c.qty : 0);
+        }, 0);
+        const totalStr = total > 0 ? ` 共¥${total.toFixed(2)}` : '';
+        const where = ctx.orderType === 2
+            ? `配送至 ${ctx.addressLabel || ctx.addressId}`
+            : `到店自提 (${ctx.storeName || ctx.storeCode})`;
+        const content = `${where} · ${summary}${totalStr}`;
+        await DB.saveMessage({
+            charId: char.id,
+            role: 'user',
+            type: 'luckin_card',
+            content,
+            metadata: {
+                luckinCardKind: 'cart',
+                luckinCartItems: items,
+                luckinOrderContext: ctx,
             },
         } as any);
         await reloadMessages(visibleCountRef.current);
@@ -2468,6 +2589,8 @@ const Chat: React.FC = () => {
                             pendingIndicator={osTheme.chatPendingIndicator !== false}
                             onMcdSendCart={handleMcdSendCart}
                             onMcdCandidate={handleMcdCandidate}
+                            onLuckinSendCart={handleLuckinSendCart}
+                            onLuckinCandidate={handleLuckinCandidate}
                             thinkingChainOptions={{
                                 styleId: (char as any).thinkingChainStyle || 'echo',
                                 customColors: (char as any).thinkingChainCustomColors,
@@ -2563,6 +2686,20 @@ const Chat: React.FC = () => {
                         </button>
                     </div>
                 )}
+                {luckinActivated && (
+                    <div className="flex items-center justify-between px-4 py-1.5 bg-blue-50 border-b border-blue-200 text-xs">
+                        <div className="flex items-center gap-1.5 text-blue-700 font-bold">
+                            <span className="inline-block w-1.5 h-1.5 rounded-full bg-blue-500 animate-pulse"/>
+                            🦌 瑞幸请求进行中
+                        </div>
+                        <button
+                          onClick={() => handleSendText(LUCKIN_DEACTIVATE_TRIGGER, 'text', { luckinDeactivate: true })}
+                          className="px-2.5 py-0.5 bg-blue-200/80 text-blue-800 rounded-full text-[11px] font-bold active:scale-95"
+                        >
+                          结束
+                        </button>
+                    </div>
+                )}
                 {replyTarget && (
                     <div className="flex items-center justify-between px-4 py-2 bg-slate-50 border-b border-slate-200 text-xs text-slate-500">
                         <div className="flex items-center gap-2 truncate"><span className="font-bold text-slate-700">正在回复:</span><span className="truncate max-w-[200px]">{replyTarget.content.length > 10 ? replyTarget.content.slice(0, 10) + '...' : replyTarget.content}</span></div>
@@ -2593,6 +2730,8 @@ const Chat: React.FC = () => {
                     isProactiveActive={isProactiveActive}
                     mcdConfigured={mcdConfiguredFlag}
                     mcdActivated={mcdActivated}
+                    luckinConfigured={luckinConfiguredFlag}
+                    luckinActivated={luckinActivated}
                     htmlModeEnabled={!!(char as any).htmlModeEnabled}
                     showThinkingChain={!!(char as any).showThinkingChain}
                     inputStyle={osTheme.chatInputStyle}
@@ -2667,6 +2806,19 @@ const Chat: React.FC = () => {
                 onSendMessage={handleMcdMiniAppSend}
                 onStateChange={handleMcdMiniAppStateChange}
                 onConfirmOrder={handleMcdAppConfirm}
+            />
+
+            {/* 🦌 瑞幸小程序 - 与麦当劳同构 */}
+            <LuckinMiniApp
+                open={luckinAppOpen}
+                onClose={() => setLuckinAppOpen(false)}
+                char={char}
+                userProfile={userProfile}
+                messages={messages}
+                isTyping={isTyping}
+                onSendMessage={handleLuckinMiniAppSend}
+                onStateChange={handleLuckinMiniAppStateChange}
+                onConfirmOrder={handleLuckinAppConfirm}
             />
 
 

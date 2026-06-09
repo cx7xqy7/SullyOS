@@ -19,6 +19,8 @@ import { buildHtmlPrompt } from './htmlPrompt';
 import { buildThinkingChainPrompt } from './thinkingChainPrompt';
 import { buildMcdMiniAppContextBlock } from './mcdToolBridge';
 import type { McdMiniAppSnapshot } from './mcdToolBridge';
+import { buildLuckinMiniAppContextBlock } from './luckinToolBridge';
+import type { LuckinMiniAppSnapshot } from './luckinToolBridge';
 import type { MusicCfg, Song, LyricLine, MusicPlaybackSnapshot } from '../context/MusicContext';
 import { isPromptBuildSkipped } from './devDebug';
 
@@ -67,6 +69,7 @@ export interface BuildChatPayloadInput {
     htmlMode?: { enabled: boolean; customPrompt?: string };
     thinkingChain?: { enabled: boolean; customPrompt?: string };
     mcdMiniSnap?: McdMiniAppSnapshot;
+    luckinMiniSnap?: LuckinMiniAppSnapshot;
 }
 
 export interface BuildChatPayloadResult {
@@ -80,6 +83,7 @@ export interface BuildChatPayloadResult {
     flags: {
         bilingualActive: boolean;
         mcdActive: boolean;
+        luckinActive: boolean;
         htmlActive: boolean;
         thinkingActive: boolean;
         promptBuildSkipped: boolean;
@@ -157,7 +161,7 @@ export async function buildChatRequestPayload(input: BuildChatPayloadInput): Pro
     const {
         char, userProfile, groups, emojis, categories, historyMsgs, contextLimit,
         realtimeConfig, innerState,
-        translationConfig, htmlMode, thinkingChain, mcdMiniSnap,
+        translationConfig, htmlMode, thinkingChain, mcdMiniSnap, luckinMiniSnap,
     } = input;
     const recentMsgsHint = input.recentMsgsHint ?? historyMsgs;
 
@@ -172,6 +176,7 @@ export async function buildChatRequestPayload(input: BuildChatPayloadInput): Pro
             flags: {
                 bilingualActive: false,
                 mcdActive: false,
+                luckinActive: false,
                 htmlActive: false,
                 thinkingActive: false,
                 promptBuildSkipped: true,
@@ -262,6 +267,15 @@ export async function buildChatRequestPayload(input: BuildChatPayloadInput): Pro
         }
     }
 
+    // ── 9b. 瑞幸小程序上下文 ──
+    const luckinActive = !!luckinMiniSnap?.open;
+    if (luckinActive) {
+        const block = buildLuckinMiniAppContextBlock(luckinMiniSnap, userProfile?.name || '用户');
+        if (block) {
+            systemPrompt += block;
+        }
+    }
+
     // ── 10. 组装 fullMessages + 末尾双语 reminder ─────────
     const fullMessages: Array<{ role: string; content: any }> = [
         { role: 'system', content: systemPrompt },
@@ -278,6 +292,6 @@ export async function buildChatRequestPayload(input: BuildChatPayloadInput): Pro
         systemPrompt,
         cleanedApiMessages,
         fullMessages,
-        flags: { bilingualActive, mcdActive, htmlActive, thinkingActive, promptBuildSkipped: false },
+        flags: { bilingualActive, mcdActive, luckinActive, htmlActive, thinkingActive, promptBuildSkipped: false },
     };
 }
