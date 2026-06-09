@@ -211,11 +211,11 @@ const BootSequence: React.FC<Props> = ({ dataReady, wallpaper, onDone }) => {
             transformOrigin: 'center',
             animation: cinematic ? 'bootLineIn 900ms ease-out 1100ms both' : 'bootLineIn 400ms ease-out 200ms both',
           }} />
-          <div className="mt-3 text-[11px] text-white/80" style={{
-            letterSpacing: '0.34em',
+          <div className="mt-3 text-[12px] text-white/85" style={{
+            letterSpacing: '0.3em',
             animation: cinematic ? 'bootSoftIn 1200ms ease-out 1250ms both' : 'bootSoftIn 500ms ease-out 250ms both',
           }}>
-            进入你的小世界
+            欢迎回家！
           </div>
         </div>
       </div>
