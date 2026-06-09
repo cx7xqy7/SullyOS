@@ -86,8 +86,8 @@ const parseWorldGen = (raw: string): { title: string; worldSetting: string } => 
         const wMatch = text.match(/"?worldSetting"?\s*:\s*"((?:[^"\\]|\\.)*?)(?:"\s*[},]|"\s*$|$)/);
         if (tMatch) title = tMatch[1];
         if (wMatch) worldSetting = wMatch[1];
-        // 还原被转义的字符
-        const unescape = (s: string) => s.replace(/\\n/g, '\n').replace(/\\t/g, '\t').replace(/\\"/g, '"').replace(/\\\\/g, '\\');
+        // 还原被转义的字符：单次扫描，避免 `\\n`（被转义的反斜杠 + 字面 n）被先一步替换成 `\` + 换行。
+        const unescape = (s: string) => s.replace(/\\(["\\nt])/g, (_, c) => c === 'n' ? '\n' : c === 't' ? '\t' : c);
         title = unescape(title);
         worldSetting = unescape(worldSetting);
         if (worldSetting || title) return { title: title.trim(), worldSetting: worldSetting.trim() };
