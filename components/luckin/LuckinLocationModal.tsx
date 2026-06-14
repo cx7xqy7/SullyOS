@@ -28,16 +28,17 @@ const LuckinLocationModal: React.FC<{
     const [err, setErr] = useState<string | null>(null);
     const [lng, setLng] = useState('');
     const [lat, setLat] = useState('');
+    const [geo, setGeo] = useState<{ lng: number; lat: number; acc: number } | null>(null);
 
     if (!open) return null;
 
     const useGeo = () => {
         if (typeof navigator === 'undefined' || !navigator.geolocation) { setErr('当前环境不支持定位, 请选城市或手输'); return; }
-        setLocating(true); setErr(null);
+        setLocating(true); setErr(null); setGeo(null);
         navigator.geolocation.getCurrentPosition(
-            (pos) => { setLocating(false); onPick(pos.coords.longitude, pos.coords.latitude, '我的定位'); },
+            (pos) => { setLocating(false); setGeo({ lng: pos.coords.longitude, lat: pos.coords.latitude, acc: pos.coords.accuracy ?? 99999 }); },
             (e) => { setLocating(false); setErr(`定位失败: ${e.message}`); },
-            { enableHighAccuracy: true, timeout: 8000 }
+            { enableHighAccuracy: true, timeout: 8000, maximumAge: 0 }
         );
     };
 
@@ -65,10 +66,28 @@ const LuckinLocationModal: React.FC<{
                     <button onClick={useGeo} disabled={locating}
                         className="w-full p-3 rounded-xl bg-white border border-[#E6DFCF] text-[13px] font-bold text-[#0B1F3A] active:scale-[0.98] disabled:opacity-60">
                         {locating ? '定位中…' : '📡 用我的定位'}
-                        <span className="block text-[10px] font-normal text-slate-400 mt-0.5">机房环境可能不准, 不准就选下面城市</span>
+                        <span className="block text-[10px] font-normal text-slate-400 mt-0.5">开了手机精确定位走 GPS, 梯子不影响; 关了会退回 IP 定位, 可能被梯子带偏</span>
                     </button>
 
                     {err && <div className="text-[11px] text-red-600 bg-red-50 rounded-lg p-2">{err}</div>}
+
+                    {geo && (() => {
+                        const accKm = geo.acc / 1000;
+                        const poor = geo.acc > 2000; // >2km 基本是 IP/WiFi 兜底 (可能被梯子带偏)
+                        return (
+                            <div className={`rounded-xl p-2.5 border ${poor ? 'bg-amber-50 border-amber-200' : 'bg-emerald-50 border-emerald-200'}`}>
+                                <div className="text-[11px] font-bold text-slate-700">
+                                    {poor ? '⚠️ 定位精度较低' : '✅ 定位成功'} · 精度 ±{geo.acc >= 1000 ? `${accKm.toFixed(1)}km` : `${Math.round(geo.acc)}m`}
+                                </div>
+                                <div className="text-[10px] text-slate-500 font-mono mt-0.5">{geo.lat.toFixed(5)}, {geo.lng.toFixed(5)}</div>
+                                {poor && <div className="text-[10px] text-amber-700 mt-1 leading-snug">这多半是 IP 定位 (可能被梯子带偏)。要么开手机精确定位重试, 要么直接选下面城市。</div>}
+                                <button onClick={() => onPick(geo.lng, geo.lat, poor ? '我的定位(粗略)' : '我的定位')}
+                                    className="mt-1.5 w-full py-1.5 bg-[#0B1F3A] text-white text-[12px] font-bold rounded-lg active:scale-95">
+                                    就用这个定位
+                                </button>
+                            </div>
+                        );
+                    })()}
 
                     <div>
                         <div className="text-[11px] font-bold text-[#0B1F3A]/60 mb-1.5">选城市</div>

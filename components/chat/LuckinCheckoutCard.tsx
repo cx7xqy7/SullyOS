@@ -132,6 +132,22 @@ const LuckinCheckoutCard: React.FC<{
             </div>
 
             <div className="p-3 space-y-2">
+                {/* 取餐门店 (来自 previewOrder.shopInfo) */}
+                {(() => {
+                    const shop = preview?.shopInfo;
+                    const shopName = shop?.deptName || (deptId != null ? `门店 ${deptId}` : undefined);
+                    if (!shopName) return null;
+                    return (
+                        <div className="bg-white/80 rounded-lg border border-[#EFE9DC] p-2 flex items-start gap-1.5">
+                            <span className="text-[13px] shrink-0">🏪</span>
+                            <div className="min-w-0">
+                                <div className="text-[12px] font-bold text-[#0B1F3A] truncate">{shopName} <span className="text-[9px] font-normal text-slate-400">到店自提</span></div>
+                                {shop?.address && <div className="text-[10px] text-slate-500 line-clamp-2 leading-snug">{shop.address}</div>}
+                            </div>
+                        </div>
+                    );
+                })()}
+
                 {/* 商品行 */}
                 <div className="bg-white/80 rounded-lg overflow-hidden border border-[#EFE9DC]">
                     {lines.map((l) => (
