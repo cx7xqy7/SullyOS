@@ -1663,6 +1663,8 @@ export interface CharacterProfile {
   chatVoiceLang?: string;
   dateVoiceEnabled?: boolean;
   dateVoiceLang?: string;
+  // Call (voice phone) — remembered translation language for this character
+  callVoiceLang?: string;
 
   // Cross-session guidebook insights: what char has discovered about user across games
   guidebookInsights?: string[];

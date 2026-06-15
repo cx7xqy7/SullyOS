@@ -4,7 +4,16 @@ import Modal from '../../components/os/Modal';
 import { useOS } from '../../context/OSContext';
 import { DB } from '../../utils/db';
 import DateSettings from './DateSettings';
-import { synthesizeSpeech, cleanTextForTts } from '../../utils/minimaxTts';
+import { synthesizeSpeech, cleanTextForTts, VALID_EMOTIONS } from '../../utils/minimaxTts';
+
+// Map a VN sprite-emotion key ([happy]/[sad]/[angry]/[shy]/[normal]/custom) to a
+// valid MiniMax TTS emotion. Sprite keys that aren't valid MiniMax emotions
+// (normal, shy, …) fall through to undefined → no emotion override.
+const dateSpriteToEmotion = (key?: string): string | undefined => {
+    if (!key) return undefined;
+    const k = key.toLowerCase();
+    return VALID_EMOTIONS.has(k) ? k : undefined;
+};
 
 // Helper: Parse dialogue with simple state machine
 const isContextNoise = (line: string) => {
@@ -146,11 +155,14 @@ const DateSession: React.FC<DateSessionProps> = ({
     const dateAudioRef = useRef<HTMLAudioElement | null>(null);
     const voiceEnabled = !!char.dateVoiceEnabled;
     const voiceLang = char.dateVoiceLang || '';
+    // Bridges the current line's sprite-emotion to the GAL voice effect (which keys
+    // off currentText only). A ref so it doesn't churn the effect's deps.
+    const currentLineEmotionRef = useRef<string | undefined>(undefined);
 
     const VOICE_LANG_LABELS: Record<string, string> = { en: 'English', ja: '日本語', ko: '한국어', fr: 'Français', es: 'Español' };
     const VOICE_LANG_OPTIONS = [{v:'',l:'默认'},{v:'en',l:'EN'},{v:'ja',l:'JP'},{v:'ko',l:'KR'},{v:'fr',l:'FR'},{v:'es',l:'ES'}];
 
-    const translateAndSpeak = async (text: string): Promise<string | null> => {
+    const translateAndSpeak = async (text: string, emotion?: string): Promise<string | null> => {
         if (!char.voiceProfile?.voiceId && (!char.voiceProfile?.timberWeights?.length)) return null;
         try {
             let ttsText = cleanTextForTts(text);
@@ -175,6 +187,7 @@ const DateSession: React.FC<DateSessionProps> = ({
             return await synthesizeSpeech(ttsText, char, apiConfig, {
                 languageBoost: voiceLang || undefined,
                 groupId: apiConfig.minimaxGroupId || undefined,
+                emotion,
             });
         } catch (err: any) {
             console.warn('Date TTS failed:', err?.message);
@@ -204,7 +217,7 @@ const DateSession: React.FC<DateSessionProps> = ({
             let url = voiceCacheRef.current[cacheKey];
             if (!url) {
                 setGalVoiceLoading(true);
-                url = await translateAndSpeak(dialogueText) || '';
+                url = await translateAndSpeak(dialogueText, currentLineEmotionRef.current) || '';
                 if (cancelled) return;
                 setGalVoiceLoading(false);
                 if (!url) return;
@@ -235,7 +248,7 @@ const DateSession: React.FC<DateSessionProps> = ({
         let url = voiceCacheRef.current[cacheKey];
         if (!url) {
             setGalVoiceLoading(true);
-            url = await translateAndSpeak(dialogueText) || '';
+            url = await translateAndSpeak(dialogueText, currentLineEmotionRef.current) || '';
             setGalVoiceLoading(false);
             if (!url) return;
             voiceCacheRef.current[cacheKey] = url;
@@ -347,7 +360,8 @@ const DateSession: React.FC<DateSessionProps> = ({
                 // Manually trigger first item processing
                 const first = items[0];
                 setCurrentText(first.text);
-                // Note: Not setting sprite here because useEffect below will handle emotion->sprite mapping if needed, 
+                currentLineEmotionRef.current = dateSpriteToEmotion(first.emotion);
+                // Note: Not setting sprite here because useEffect below will handle emotion->sprite mapping if needed,
                 // or we rely on default.
                 setDialogueQueue(items.slice(1));
             }
@@ -404,6 +418,7 @@ const DateSession: React.FC<DateSessionProps> = ({
 
     const processNextDialogue = (item: DialogueItem, remaining: DialogueItem[]) => {
         setCurrentText(item.text);
+        currentLineEmotionRef.current = dateSpriteToEmotion(item.emotion);
         if (item.emotion && activeSprites) {
             const emotionKey = item.emotion.toLowerCase();
             if (dateEmotionKeys.includes(emotionKey)) {

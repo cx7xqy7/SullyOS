@@ -27,7 +27,7 @@ import Modal from '../components/os/Modal';
 import ProactiveSettingsModal from '../components/chat/ProactiveSettingsModal';
 import ThinkingChainSettingsModal from '../components/chat/ThinkingChainSettingsModal';
 import { useChatAI } from '../hooks/useChatAI';
-import { synthesizeSpeechDetailed, cleanTextForTts } from '../utils/minimaxTts';
+import { synthesizeSpeechDetailed, cleanTextForTts, parseVoiceOutput } from '../utils/minimaxTts';
 import { resolveMiniMaxApiKey } from '../utils/minimaxApiKey';
 import { isInstantConfigReady, loadInstantConfig } from '../utils/instantPushClient';
 
@@ -280,20 +280,16 @@ const Chat: React.FC = () => {
     handlePlayVoiceRef.current = handlePlayVoice;
     const onPlayVoiceStable = useCallback((id: number) => handlePlayVoiceRef.current(id), []);
 
-    /** Extract <语音>...</语音> tag content from a message, if present */
-    const extractVoiceTag = (content: string): string | null => {
-        const match = content.match(/<[语語]音>([\s\S]*?)<\/[语語]音>/);
-        return match ? match[1].trim() : null;
-    };
-
     const handleManualTts = async (msg: Message, autoTriggered = false) => {
         if (voiceDataMap[msg.id] || voiceLoading.has(msg.id)) return;
 
-        // Check if message contains a <语音> tag (AI chose to send voice)
-        const voiceTagContent = extractVoiceTag(msg.content);
+        // Parse the structured voice output: spoken text (sanitized) + per-message emotion.
+        const parsedVoice = parseVoiceOutput(msg.content);
+        const voiceTagContent = parsedVoice.hasVoiceTag ? parsedVoice.speech : '';
+        const voiceEmotion = parsedVoice.emotion;
 
         // Auto-TTS: only generate voice when AI explicitly used <语音> tag
-        if (autoTriggered && !voiceTagContent) return;
+        if (autoTriggered && !parsedVoice.hasVoiceTag) return;
 
         // MiniMax not configured for this character: don't attempt synthesis (it would
         // throw and surface an error toast on every message / every tap). Instead remind
@@ -314,8 +310,9 @@ const Chat: React.FC = () => {
             const voiceLang = char.chatVoiceLang || '';
 
             if (voiceTagContent) {
-                // AI already provided the spoken text (possibly translated) in <语音> tag
-                spokenText = cleanTextForTts(`<语音>${voiceTagContent}</语音>`);
+                // AI already provided the spoken text (possibly translated) in <语音> tag.
+                // parseVoiceOutput already sanitized it (whitelisted sound tags only).
+                spokenText = voiceTagContent;
                 // originalText = text OUTSIDE the voice tag (the display/Chinese text)
                 const textOutsideTag = msg.content.replace(/<[语語]音>[\s\S]*?<\/[语語]音>/g, '').trim();
                 originalText = textOutsideTag ? cleanTextForTts(textOutsideTag) : '';
@@ -380,6 +377,7 @@ const Chat: React.FC = () => {
             const { url: blobUrl, blob } = await synthesizeSpeechDetailed(spokenText, char, apiConfig, {
                 languageBoost: voiceLang || undefined,
                 groupId: apiConfig.minimaxGroupId || undefined,
+                emotion: voiceEmotion,
             });
             if (blobUrl.startsWith('blob:')) voiceBlobUrlsRef.current.add(blobUrl);
             const storedSpokenText = voiceTagContent ? spokenText : (voiceLang ? spokenText : undefined);

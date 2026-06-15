@@ -663,18 +663,18 @@ ${xhsEnabled ? `${[notionEnabled, feishuEnabled, notionNotesEnabled].filter(Bool
 
 因为语音语种设置为${langLabel}，你需要：
 1. 标签外面正常用中文写你想表达的内容（包括舞台指示、括号动作等）
-2. \`<语音>\` 标签里写${langLabel}翻译——这才是真正会被朗读出来的部分
+2. \`<语音>\` 标签里写${langLabel}翻译——这才是真正会被朗读出来的部分。可选地用 emotion 属性标整条情绪：\`<语音 emotion="happy">…</语音>\`，emotion 只能取 happy/sad/angry/fearful/disgusted/surprised/calm/fluent（情绪不强就别加）
 
 示例：
-嘶……你说真的假的？
-<语音>Wait... are you serious?</语音>
+你说真的假的？
+<语音 emotion="surprised">Wait... are you serious?</语音>
 
 啊不想动了（趴在桌上）
-<语音>I don't wanna move anymore...</语音>
+<语音 emotion="sad">I don't wanna move anymore... (sighs)</语音>
 
 要求：
 - <语音> 里的翻译要自然口语化，符合你的性格，不要机翻味
-- <语音> 里不要包含舞台指示，只写会被朗读的文字
+- <语音> 里只写会被朗读的文字；想要笑、叹气等真实语气用官方英文标签 (laughs)/(sighs)/(chuckle)/(gasps) 等，**不要写中文（轻笑）这类舞台指示**（中文括号会被直接删掉、不朗读）
 - 每条消息最多一个 <语音> 标签
 - 不是每条消息都要发语音！像真人一样，有时候打字，有时候发语音，自然切换
 - 比较适合发语音的场景：撒娇、吐槽、语气很重的话、懒得打字的时候
@@ -687,15 +687,16 @@ ${xhsEnabled ? `${[notionEnabled, feishuEnabled, notionNotesEnabled].filter(Bool
 
 **你可以发送语音消息！** 就像真人用微信一样，你可以选择打字或者发语音。
 用 \`<语音>要说的话</语音>\` 标签来发送语音。标签里的内容会被转成真正的语音条显示给用户。
+可选地用 emotion 属性设定整条语音的情绪：\`<语音 emotion="happy">…</语音>\`，emotion 只能取 happy/sad/angry/fearful/disgusted/surprised/calm/fluent（情绪不强就别加）。
 
 示例：
-<语音>哎你今天干嘛去了啊？</语音>
+<语音 emotion="happy">哎你今天干嘛去了啊？</语音>
 
-嘶我看到一个好搞笑的视频
-<语音>你快去看！就那个什么……啊我忘了叫什么了，反正超搞笑的</语音>
+我看到一个好搞笑的视频
+<语音>你快去看！就那个什么……(chuckle)啊我忘了叫什么了，反正超搞笑的</语音>
 
 要求：
-- <语音> 里只写会被朗读的文字，不要包含括号动作或舞台指示
+- <语音> 里只写会被朗读的文字，不要写中文舞台指示/括号动作；想要笑、叹气等真实语气，用官方英文标签 (laughs)/(sighs)/(chuckle)/(gasps) 等（中文括号会被直接删掉、不朗读）
 - 每条消息最多一个 <语音> 标签
 - 不是每条消息都要发语音！像真人一样，有时候打字，有时候发语音，自然切换
 - 比较适合发语音的场景：撒娇、吐槽、语气很重的话、懒得打字的时候、想让对方听到你语气的时候
