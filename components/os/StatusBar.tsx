@@ -62,9 +62,15 @@ const StatusBar: React.FC = () => {
 
   return (
     <>
-      <div 
+      {/* TODO(safe-area-B): 时钟/电量贴灵动岛
+         现象：iOS 全屏 PWA 下时间电量偏下，没贴住系统灵动岛两侧（dev 与 master 都如此，非某次迁移引入）。
+         根因：下面 paddingTop 用了整段 var(--safe-top)(灵动岛设备≈59px)+ items-start，把内容压到安全区底部，
+               而不是在灵动岛高度内垂直居中。要往上贴就得减小这个 paddingTop（如在 safe-top 内居中、或用更小的固定偏移）。
+         注意：StatusBar 是所有 App 共用的全局组件，改这里会同时移动每个 App 的时钟，且有与灵动岛碰撞的风险，
+               需单独改 + 单独真机验证，别和某个 App 的迁移捆在一起。 */}
+      <div
           className="w-full flex justify-between items-start px-6 text-[11px] font-bold z-50 absolute top-0 left-0 bg-transparent transition-colors duration-500 select-none pointer-events-none"
-          style={{ 
+          style={{
               color: textColor,
               paddingTop: 'max(4px, var(--safe-top))',
               height: 'auto',
