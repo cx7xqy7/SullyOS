@@ -1273,7 +1273,13 @@ Format:
                             sim={sim} onStart={runSim} onConsumed={() => personaSimStore.reset()} />
                     )}
                     {activeAppId === 'lifelog' && targetChar && (
-                        <LifeLog targetChar={targetChar} onBack={() => setActiveAppId('home')} />
+                        <LifeLog targetChar={targetChar} onBack={() => setActiveAppId('home')}
+                            onReplay={(log) => {
+                                if (!log.script) return;
+                                // 用存下来的脚本快照原样回放——直接喂给全局 store 的 ready 态
+                                personaSimStore.set({ status: 'ready', mode: log.mode, theme: log.theme, script: log.script, replay: true, charId: targetChar.id, charName: targetChar.name });
+                                setActiveAppId('persona');
+                            }} />
                     )}
                     {customActive && renderCustomApp(customActive)}
                 </>

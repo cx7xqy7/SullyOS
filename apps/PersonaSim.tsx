@@ -2,6 +2,7 @@ import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { useOS } from '../context/OSContext';
 import { DB } from '../utils/db';
 import { CharacterProfile, PhoneSimLog, CharacterBuff, UserProfile } from '../types';
+import type { SimBeat as Beat, SimBeatKind as BeatKind, SimScript } from '../types';
 import { ContextBuilder } from '../utils/context';
 import { injectMemoryPalace } from '../utils/memoryPalace/pipeline';
 import { isScheduleFeatureOn } from '../utils/scheduleGenerator';
@@ -14,46 +15,14 @@ import {
 } from '@phosphor-icons/react';
 
 // ============================================================
-//  TYPES (runtime script model)
+//  TYPES (runtime script model) — Beat / SimScript 已移到 types.ts 共享，
+//  以便「生活记录」存完整脚本快照用于重播。
 // ============================================================
-type BeatKind = 'lock' | 'thought' | 'notification' | 'app' | 'flashback' | 'end';
-
-interface Beat {
-    time?: string;
-    kind: BeatKind;
-    monologue?: string;
-    pace?: 1 | 2 | 3;
-    vibe?: 'calm' | 'chaotic' | 'happy' | 'anxious' | 'numb' | 'tender';
-    notif?: { app: string; title: string; body: string; tone?: 'push' | 'sms' | 'system' | 'flashback' };
-    app?: {
-        name: string;
-        view: 'chat' | 'search' | 'photo' | 'music' | 'notes' | 'browser' | 'weather' | 'compose' | 'generic';
-        chat?: { name: string; lines: { me: boolean; text: string }[] };
-        search?: { engine?: string; queries: { q: string; deleted?: boolean }[] };
-        photo?: { caption?: string; date?: string; tint?: string };
-        music?: { song: string; artist: string; state?: string };
-        notes?: { title?: string; items: string[] };
-        browser?: { tabs: string[] };
-        weather?: { city: string; temp: number; desc: string };
-        compose?: { to?: string; drafts: string[]; sent?: string | null };
-        text?: string;
-    };
-    flashback?: { label?: string; caption?: string; date?: string; tint?: string };
-}
-
-interface SimScript {
-    title: string;
-    ending?: string;
-    beats: Beat[];
-    summary: string;
-    buff?: { name?: string; label: string; emoji?: string; color?: string; intensity?: 1 | 2 | 3; description?: string };
-}
-
 export interface SimApiConfig { apiKey: string; baseUrl: string; model: string; }
 export type SimState =
     | { status: 'idle' }
     | { status: 'loading'; mode: 'daily' | 'event'; theme: string }
-    | { status: 'ready'; mode: 'daily' | 'event'; theme: string; script: SimScript }
+    | { status: 'ready'; mode: 'daily' | 'event'; theme: string; script: SimScript; replay?: boolean }
     | { status: 'error'; mode: 'daily' | 'event'; theme: string };
 
 interface Props {
@@ -189,7 +158,8 @@ const PersonaSim: React.FC<Props> = ({ targetChar, onExit, openLifeLog, sim, onS
     useEffect(() => {
         if (phase === 'idle' && sim.status === 'ready') {
             setMode(sim.mode); setTheme(sim.theme);
-            setScript(sim.script); setIdx(0); savedRef.current = false; setMemorySent(false); setPhase('play');
+            // 重播：脚本来自生活记录已存档的快照，别再 persist 一遍（否则生活记录里出现重复）
+            setScript(sim.script); setIdx(0); savedRef.current = !!sim.replay; setMemorySent(false); setPhase('play');
             onConsumed();
         }
     }, [sim, phase, onConsumed]);
@@ -209,6 +179,7 @@ const PersonaSim: React.FC<Props> = ({ targetChar, onExit, openLifeLog, sim, onS
             beatsCount: beats.length,
             memoryText: buildMemoryText(script),
             timestamp: Date.now(),
+            script,   // 存完整脚本快照 → 生活记录可原样重播
         };
 
         // emotion buff — only if the schedule feature is on for this character
@@ -970,7 +941,7 @@ const TopBar: React.FC<{ onBack: () => void; right?: React.ReactNode; title?: st
 // ============================================================
 //  LIFE LOG (生活记录) — sub-app
 // ============================================================
-export const LifeLog: React.FC<{ targetChar: CharacterProfile; onBack: () => void }> = ({ targetChar, onBack }) => {
+export const LifeLog: React.FC<{ targetChar: CharacterProfile; onBack: () => void; onReplay?: (log: PhoneSimLog) => void }> = ({ targetChar, onBack, onReplay }) => {
     const { addToast } = useOS();
     const logs = targetChar.phoneState?.simLogs || [];
     const [sent, setSent] = useState<Record<string, boolean>>({});
@@ -1019,11 +990,19 @@ export const LifeLog: React.FC<{ targetChar: CharacterProfile; onBack: () => voi
                                     <span>{log.buff.emoji || '✨'}</span>{log.buff.label}
                                 </div>
                             ) : <span />}
-                            <button onClick={() => sendLog(log)} disabled={!!sent[log.id]}
-                                className="shrink-0 inline-flex items-center gap-1.5 px-3 py-1.5 rounded-full text-[10px] font-semibold active:scale-95 transition disabled:opacity-60"
-                                style={sent[log.id] ? { background: 'rgba(255,255,255,0.06)', color: 'rgba(255,255,255,0.5)' } : { background: ACCENT, color: '#1a1530' }}>
-                                {sent[log.id] ? <><Check size={12} weight="bold" /> 已发送</> : <><PaperPlaneTilt size={12} weight="fill" /> 发送给 TA</>}
-                            </button>
+                            <div className="flex items-center gap-2 shrink-0">
+                                {onReplay && log.script?.beats?.length ? (
+                                    <button onClick={() => onReplay(log)}
+                                        className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-full text-[10px] font-semibold active:scale-95 transition border border-white/[0.12] text-white/80 bg-white/[0.05]">
+                                        <ArrowClockwise size={12} weight="bold" /> 重播
+                                    </button>
+                                ) : null}
+                                <button onClick={() => sendLog(log)} disabled={!!sent[log.id]}
+                                    className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-full text-[10px] font-semibold active:scale-95 transition disabled:opacity-60"
+                                    style={sent[log.id] ? { background: 'rgba(255,255,255,0.06)', color: 'rgba(255,255,255,0.5)' } : { background: ACCENT, color: '#1a1530' }}>
+                                    {sent[log.id] ? <><Check size={12} weight="bold" /> 已发送</> : <><PaperPlaneTilt size={12} weight="fill" /> 发送给 TA</>}
+                                </button>
+                            </div>
                         </div>
                     </div>
                 ))}

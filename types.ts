@@ -576,6 +576,38 @@ export interface PhoneEvidence {
     value?: string;
 }
 
+// 「人格模拟」演出运行时脚本模型（生成后驱动播放，也用于生活记录重播）
+export type SimBeatKind = 'lock' | 'thought' | 'notification' | 'app' | 'flashback' | 'end';
+export interface SimBeat {
+    time?: string;
+    kind: SimBeatKind;
+    monologue?: string;
+    pace?: 1 | 2 | 3;
+    vibe?: 'calm' | 'chaotic' | 'happy' | 'anxious' | 'numb' | 'tender';
+    notif?: { app: string; title: string; body: string; tone?: 'push' | 'sms' | 'system' | 'flashback' };
+    app?: {
+        name: string;
+        view: 'chat' | 'search' | 'photo' | 'music' | 'notes' | 'browser' | 'weather' | 'compose' | 'generic';
+        chat?: { name: string; lines: { me: boolean; text: string }[] };
+        search?: { engine?: string; queries: { q: string; deleted?: boolean }[] };
+        photo?: { caption?: string; date?: string; tint?: string };
+        music?: { song: string; artist: string; state?: string };
+        notes?: { title?: string; items: string[] };
+        browser?: { tabs: string[] };
+        weather?: { city: string; temp: number; desc: string };
+        compose?: { to?: string; drafts: string[]; sent?: string | null };
+        text?: string;
+    };
+    flashback?: { label?: string; caption?: string; date?: string; tint?: string };
+}
+export interface SimScript {
+    title: string;
+    ending?: string;
+    beats: SimBeat[];
+    summary: string;
+    buff?: { name?: string; label: string; emoji?: string; color?: string; intensity?: 1 | 2 | 3; description?: string };
+}
+
 // 「人格模拟」演出结束后写入「生活记录」的一条留存（角色不记得，仅作为用户的体验档案）
 export interface PhoneSimLog {
     id: string;
@@ -588,6 +620,7 @@ export interface PhoneSimLog {
     buff?: { label: string; emoji?: string; color?: string };
     memoryText?: string;  // 演出可读梗概，作为回忆发给角色时用（让角色真的"知道"发生了什么）
     timestamp: number;
+    script?: SimScript;   // 完整脚本快照——存在则「生活记录」可原样重播（旧记录没有，仅可发送）
 }
 
 export interface Worldbook {
