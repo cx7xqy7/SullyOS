@@ -136,8 +136,8 @@ const CHAT_LAYOUT_COMBOS: { name: string; desc: string; config: Partial<OSTheme>
 // --- 桌面整机风格（皮肤）---
 // 动森壁纸：NookPhone 同款奶油底（#F8F4E8），底部极淡草色透气。纯 CSS 渐变，让彩色图标平铺更跳。
 const ACNH_WALLPAPER = 'linear-gradient(180deg, #F8F4E8 0%, #F3EFDD 58%, #E6EECE 100%)';
-// 手游主题壁纸：梦幻粉紫渐变。纯 CSS，呼应二次元手游首页氛围。
-const MOBILEGAME_WALLPAPER = 'radial-gradient(110% 75% at 80% 0%, #f7d9ec 0%, transparent 55%), radial-gradient(110% 80% at 10% 15%, #d9d4f5 0%, transparent 55%), linear-gradient(180deg, #f1ebfb 0%, #ece4f7 45%, #e7def4 72%, #ddd0f0 100%)';
+// 手游主题壁纸：梦幻粉紫渐变（照搬原创参考图的整体色调 —— 冷调薰衣草紫底 + 右上淡粉光晕）。
+const MOBILEGAME_WALLPAPER = 'radial-gradient(100% 62% at 82% 0%, #f0d8ea 0%, transparent 50%), radial-gradient(95% 70% at 8% 12%, #ddd6f2 0%, transparent 55%), linear-gradient(180deg, #e8e1f5 0%, #e2daf1 52%, #dbd2ee 100%)';
 
 const DESKTOP_SKINS: { id: string; name: string; desc: string; swatch: string; config: Partial<OSTheme> }[] = [
   {

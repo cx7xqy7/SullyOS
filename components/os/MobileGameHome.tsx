@@ -4,6 +4,7 @@ import { Icons, INSTALLED_APPS } from '../../constants';
 import { AppID, CharacterProfile } from '../../types';
 import { DB } from '../../utils/db';
 import AppIcon from './AppIcon';
+import { getMobileGameArt } from './mobilegameArt';
 import { isDevDebugAvailable, subscribeDevDebugAvailability } from '../../utils/devDebug';
 
 // ===== 手游主题（mobilegame skin）=====
@@ -69,6 +70,10 @@ const renderGlyph = (iconKey: string, className: string) => {
     const Comp = Icons[iconKey] || Icons.Settings;
     return <Comp className={className} />;
 };
+
+// 有手游插画就用插画（自带配色），否则回退到 Phosphor 线性图标
+const renderAppArt = (id: AppID): React.ReactNode =>
+    getMobileGameArt(id) || renderGlyph(INSTALLED_APPS.find(a => a.id === id)?.icon || 'Settings', 'w-full h-full');
 
 // 星芒 ✦ 装饰：按 [x%, y%, 字号px, 颜色, 透明度] 散落
 type Sp = [number, number, number, string, number];
@@ -285,9 +290,14 @@ const MobileGameHome: React.FC = () => {
                         <span className="text-[12px]" style={{ color: PAL.pink }}>✦</span>
                     </div>
 
-                    {/* 角色立绘贴纸（右下）*/}
+                    {/* 角色立绘贴纸（右下，羽化融入卡片）*/}
                     {widgetChar?.avatar && (
-                        <div className="absolute -right-1 bottom-0 w-28 h-28 rounded-full overflow-hidden" style={{ border: '3px solid rgba(255,255,255,0.85)', boxShadow: '0 6px 16px rgba(150,120,200,0.4)' }}>
+                        <div className="absolute right-0 bottom-0 w-36 h-36 pointer-events-none"
+                            style={{
+                                WebkitMaskImage: 'radial-gradient(70% 70% at 58% 42%, #000 52%, transparent 80%)',
+                                maskImage: 'radial-gradient(70% 70% at 58% 42%, #000 52%, transparent 80%)',
+                                filter: 'drop-shadow(0 4px 10px rgba(150,120,200,0.35))',
+                            }}>
                             <img src={widgetChar.avatar} className="w-full h-full object-cover" alt="" loading="lazy" />
                         </div>
                     )}
@@ -319,10 +329,12 @@ const MobileGameHome: React.FC = () => {
                 <div className="grid grid-cols-4 gap-2.5 animate-fade-in">
                     {QUICK_ENTRIES.map(e => (
                         <button key={e.id} onClick={() => openApp(e.id)} className="flex flex-col items-center gap-2 active:scale-90 transition-transform">
-                            <div className="relative w-[3.75rem] h-[3.75rem] rounded-[1.4rem] flex items-center justify-center overflow-hidden"
-                                style={{ background: 'linear-gradient(150deg, #ffffff, #ece4f7)', border: '1px solid rgba(255,255,255,0.9)', boxShadow: '0 6px 14px rgba(150,120,200,0.2), inset 0 1px 1px rgba(255,255,255,0.9)' }}>
-                                <span className="absolute top-1 right-1.5 text-[8px]" style={{ color: PAL.pink, opacity: 0.8 }}>✦</span>
-                                <div className="w-7 h-7" style={{ color: PAL.grape }}>{renderGlyph(INSTALLED_APPS.find(a => a.id === e.id)?.icon || 'Settings', 'w-full h-full')}</div>
+                            <div className="relative w-[3.9rem] h-[3.9rem] rounded-[1.45rem] flex items-center justify-center overflow-hidden"
+                                style={{ background: 'linear-gradient(150deg, #ffffff, #ede6f8)', border: '1px solid rgba(255,255,255,0.95)', boxShadow: '0 7px 16px rgba(150,120,200,0.22), inset 0 1.5px 2px rgba(255,255,255,1)' }}>
+                                {/* 顶部光泽 */}
+                                <div className="absolute inset-x-0 top-0 h-1/2 pointer-events-none" style={{ background: 'linear-gradient(180deg, rgba(255,255,255,0.7), transparent)' }} />
+                                <span className="absolute top-1 right-1.5 text-[8px] z-10" style={{ color: PAL.pink, opacity: 0.85 }}>✦</span>
+                                <div className="relative w-[2.4rem] h-[2.4rem]" style={{ filter: 'drop-shadow(0 3px 5px rgba(150,120,200,0.3))' }}>{renderAppArt(e.id)}</div>
                             </div>
                             <span className="text-[11px]" style={{ fontFamily: FONT_CN, color: PAL.grape }}>{e.cn}</span>
                         </button>
@@ -338,8 +350,8 @@ const MobileGameHome: React.FC = () => {
                             style={CARD}>
                             <Sparkles items={[[10, 18, 9, PAL.pink, 0.7], [90, 80, 8, PAL.peri, 0.6]]} />
                             <span className="absolute top-2.5 left-3.5 text-[12px] tabular-nums" style={{ fontFamily: FONT_DISPLAY, color: PAL.lilac }}>{String(i + 1).padStart(2, '0')}</span>
-                            <div className="absolute right-3 top-1/2 -translate-y-1/2 w-[3.5rem] h-[3.5rem] pointer-events-none" style={{ color: PAL.pink, opacity: 0.9, filter: 'drop-shadow(0 3px 6px rgba(234,118,180,0.3))' }}>
-                                {renderGlyph(INSTALLED_APPS.find(a => a.id === card.id)?.icon || 'Settings', 'w-full h-full')}
+                            <div className="absolute right-2.5 top-1/2 -translate-y-1/2 w-[3.9rem] h-[3.9rem] pointer-events-none" style={{ filter: 'drop-shadow(0 4px 7px rgba(150,120,200,0.3))' }}>
+                                {renderAppArt(card.id)}
                             </div>
                             <div className="relative mt-2">
                                 <div className="text-[21px] leading-tight" style={{ fontFamily: FONT_CN, color: PAL.grape }}>{card.cn}</div>
