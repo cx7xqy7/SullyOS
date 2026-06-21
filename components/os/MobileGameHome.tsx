@@ -399,7 +399,7 @@ const MobileGameHome: React.FC = () => {
                 <div className="relative pointer-events-auto rounded-[1.9rem] px-3 py-2.5 flex items-end justify-between"
                     style={{ background: 'rgba(255,255,255,0.7)', border: '1px solid rgba(255,255,255,0.9)', boxShadow: '0 -6px 30px rgba(150,120,200,0.2), inset 0 1px 0 rgba(255,255,255,0.9)', backdropFilter: 'blur(18px)', WebkitBackdropFilter: 'blur(18px)' }}>
                     <DockItem id={AppID.Chat} cn="消息" badge={totalUnread} onClick={() => openApp(AppID.Chat)} />
-                    <DockItem id={AppID.Character} cn="好友" badge={characters?.length || 0} onClick={() => openApp(AppID.Character)} />
+                    <DockItem id={AppID.Character} cn="好友" onClick={() => openApp(AppID.Character)} />
                     {/* 中央罗盘 */}
                     <button onClick={() => setDrawerOpen(true)} aria-label="全部应用" className="-mt-8 w-[4.2rem] h-[4.2rem] rounded-full flex items-center justify-center active:scale-95 transition-transform shrink-0"
                         style={{ background: `linear-gradient(135deg, ${PAL.pink}, ${PAL.peri}, ${PAL.lilac})`, padding: '3px', boxShadow: '0 8px 22px rgba(234,118,180,0.5)' }}>
