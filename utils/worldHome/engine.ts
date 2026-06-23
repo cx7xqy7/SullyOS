@@ -215,6 +215,39 @@ function buildCardContent(world: WorldProfile, storyTime: string, beat: WorldCha
     return lines.join('\n');
 }
 
+/** 组装某一拍的 world_card metadata（与彼方 vr_card 同构，注入聊天 / 进记忆用）。 */
+export function buildWorldCardMeta(world: WorldProfile, beat: WorldCharBeat, round: number, storyTime: string): WorldCardMeta {
+    return {
+        worldCard: true,
+        worldId: world.id,
+        worldName: world.name,
+        mode: world.mode,
+        round,
+        storyTime,
+        location: beat.location,
+        mood: beat.mood,
+        narrative: beat.narrative,
+        statusPanel: beat.statusPanel,
+        timeline: beat.timeline,
+        memo: beat.memo,
+        impulse: beat.impulse,
+        phonePosts: beat.phone?.posts,
+        phoneGroup: beat.phone?.group,
+    };
+}
+
+/**
+ * 把某一拍作为 world_card 注入这名角色的 1v1 聊天（进上下文与记忆）。
+ * 自动演绎、单拍补发都走这里——保证格式一致，也方便 UI 做「手动发送保底」。
+ */
+export async function injectWorldCard(world: WorldProfile, beat: WorldCharBeat, round: number, storyTime: string): Promise<void> {
+    await DB.saveMessage({
+        charId: beat.charId, role: 'assistant', type: 'world_card',
+        content: buildCardContent(world, storyTime, beat),
+        metadata: buildWorldCardMeta(world, beat, round, storyTime),
+    });
+}
+
 export async function runWorldEpisode(deps: WorldEpisodeDeps): Promise<WorldEpisodeResult> {
     const { world, characters, apiConfig, userProfile, groups, realtimeConfig, memoryPalaceConfig, trigger } = deps;
 
@@ -452,28 +485,8 @@ export async function runWorldEpisode(deps: WorldEpisodeDeps): Promise<WorldEpis
         // ── 4. world_card 注入各成员 1v1 聊天（与彼方 vr_card 同构；sim 模式不进记忆，跳过） ──
         if (entersMemory) {
             for (const beat of beats) {
-                const meta: WorldCardMeta = {
-                    worldCard: true,
-                    worldId: world.id,
-                    worldName: world.name,
-                    mode: world.mode,
-                    round: episode.round,
-                    storyTime,
-                    location: beat.location,
-                    mood: beat.mood,
-                    narrative: beat.narrative,
-                    statusPanel: beat.statusPanel,
-                    timeline: beat.timeline,
-                    memo: beat.memo,
-                    impulse: beat.impulse,
-                    phonePosts: beat.phone?.posts,
-                    phoneGroup: beat.phone?.group,
-                };
                 try {
-                    await DB.saveMessage({
-                        charId: beat.charId, role: 'assistant', type: 'world_card',
-                        content: buildCardContent(world, storyTime, beat), metadata: meta,
-                    });
+                    await injectWorldCard(world, beat, episode.round, storyTime);
                 } catch (e) {
                     console.error(`[WorldHome] card inject failed for ${beat.charName}:`, e);
                 }
@@ -585,23 +598,31 @@ export async function rerollWorldCharBeat(
         };
         await DB.saveWorldEpisode(updatedEp);
 
+        // 重演会换掉这一拍的动态，但点赞/评论按 `round_charId_idx` 关联——不清掉旧反应，
+        // 上一次的评论就会原样挂到新动态上（评论对不上号）。这里把这名角色这一轮的反应全抹掉；
+        // 重演不再跑 NPC 引擎，新动态先没有互动也好过挂错评论。
+        let worldDirty = false;
+        if (world.feedReactions) {
+            const prefix = `${episode.round}_${charId}_`;
+            const kept = Object.fromEntries(Object.entries(world.feedReactions).filter(([k]) => !k.startsWith(prefix)));
+            if (Object.keys(kept).length !== Object.keys(world.feedReactions).length) {
+                world.feedReactions = kept;
+                worldDirty = true;
+            }
+        }
+
         // 仅当之前是「失败缺这拍」时补副作用，避免对已有拍重复加好感/重复消息
         if (!hadBeat) {
             applyBeatToThreads(world, beat, members, episode.round, episode.storyTime);
             collectSeeds(world, beat, episode.round, episode.storyTime);
             applyRelationshipDeltas(world, [beat], members);
-            await DB.saveWorld({ ...world, threads: world.threads, seeds: world.seeds, relationships: world.relationships, updatedAt: Date.now() });
+            worldDirty = true;
             if (world.timeMode !== 'sim' && world.injectToChat !== false) {
-                const meta: WorldCardMeta = {
-                    worldCard: true, worldId: world.id, worldName: world.name, mode: world.mode,
-                    round: episode.round, storyTime: episode.storyTime, location: beat.location, mood: beat.mood,
-                    narrative: beat.narrative, statusPanel: beat.statusPanel, timeline: beat.timeline, memo: beat.memo,
-                    impulse: beat.impulse, phonePosts: beat.phone?.posts, phoneGroup: beat.phone?.group,
-                };
-                try {
-                    await DB.saveMessage({ charId: beat.charId, role: 'assistant', type: 'world_card', content: buildCardContent(world, episode.storyTime, beat), metadata: meta });
-                } catch { /* ignore */ }
+                try { await injectWorldCard(world, beat, episode.round, episode.storyTime); } catch { /* ignore */ }
             }
+        }
+        if (worldDirty) {
+            await DB.saveWorld({ ...world, threads: world.threads, seeds: world.seeds, relationships: world.relationships, feedReactions: world.feedReactions, updatedAt: Date.now() });
         }
         dispatch('world-episode-done', { worldId: world.id, episodeId: updatedEp.id, storyTime: episode.storyTime, round: episode.round });
         return { ok: true, episode: updatedEp };

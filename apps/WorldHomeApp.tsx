@@ -23,7 +23,7 @@ import {
 import { DB } from '../utils/db';
 import { getChibi } from '../utils/vrWorld/chibi';
 import { WorldScheduler } from '../utils/worldHome/scheduler';
-import { isWorldRunning } from '../utils/worldHome/engine';
+import { isWorldRunning, injectWorldCard } from '../utils/worldHome/engine';
 import { worldTimeLabel, isNightWorld, houseOf, NARRATIVE_STYLES, buildNpcRollPrompt, parseRolledNpcs, realObserveTarget } from '../utils/worldHome/prompts';
 import { SIM_CHAPTER_DAYS, SIM_CHAPTER_CLOCKS } from '../utils/worldHome/chapters';
 import { dmThreadsOf, groupThreadOf } from '../utils/worldHome/threads';
@@ -40,7 +40,8 @@ import type { WorldProfile, WorldEpisode, WorldHomeMode, WorldTimeMode, WorldHou
 type WHEditTarget =
     | { type: 'post'; round: number; charId: string; idx: number }
     | { type: 'memo'; round: number; charId: string; idx: number }
-    | { type: 'msg'; threadId: string; msgId: string };
+    | { type: 'msg'; threadId: string; msgId: string }
+    | { type: 'comment'; key: string; idx: number };
 
 /** 自定义文风的本地收藏 / 家园全局 API 的 localStorage key —— 与备份工具共用同一组，避免漂移。 */
 const CUSTOM_STYLE_KEY = WORLD_CUSTOM_STYLE_KEY;
@@ -390,7 +391,15 @@ const PhoneModal: React.FC<{
                                                             {rx && rx.comments.length > 0 && (
                                                                 <div className="mt-1.5 rounded-lg bg-slate-50 px-2.5 py-1.5 space-y-1">
                                                                     {rx.comments.map((c, ci) => (
-                                                                        <p key={ci} className="text-[10.5px] leading-snug text-slate-600"><span className="font-bold text-slate-700">{c.from}</span>：{c.text}</p>
+                                                                        <div key={ci} className="group flex items-start gap-1">
+                                                                            <p className="flex-1 text-[10.5px] leading-snug text-slate-600"><span className="font-bold text-slate-700">{c.from}</span>：{c.text}</p>
+                                                                            {onEditContent && (
+                                                                                <button onClick={() => onEditContent({ type: 'comment', key: f.key, idx: ci }, null)}
+                                                                                    className="shrink-0 mt-px text-slate-300 active:text-rose-500 active:scale-90 transition" title="删除这条评论">
+                                                                                    <X size={11} weight="bold" />
+                                                                                </button>
+                                                                            )}
+                                                                        </div>
                                                                     ))}
                                                                 </div>
                                                             )}
@@ -992,7 +1001,8 @@ const ResidentDayCard: React.FC<{
     onPhone: () => void;
     onDirective: (impulseText: string, text: string) => void;
     onReroll?: () => void;
-}> = ({ char, beat: b, t, world, onPhone, onDirective, onReroll }) => {
+    onInject?: () => void;
+}> = ({ char, beat: b, t, world, onPhone, onDirective, onReroll, onInject }) => {
     const [open, setOpen] = useState(false);
     if (!b) {
         return (
@@ -1103,10 +1113,19 @@ const ResidentDayCard: React.FC<{
                             ))}
                         </div>
                     )}
-                    {onReroll && (
-                        <button onClick={onReroll} className={`mt-1 flex items-center gap-1 text-[10px] font-bold px-2.5 py-1 rounded-lg border ${t.chip} active:scale-95 transition-transform`}>
-                            <Sparkle size={11} weight="fill" className="text-violet-500" />重演这一段
-                        </button>
+                    {(onReroll || onInject) && (
+                        <div className="mt-1 flex flex-wrap items-center gap-1.5">
+                            {onReroll && (
+                                <button onClick={onReroll} className={`flex items-center gap-1 text-[10px] font-bold px-2.5 py-1 rounded-lg border ${t.chip} active:scale-95 transition-transform`}>
+                                    <Sparkle size={11} weight="fill" className="text-violet-500" />重演这一段
+                                </button>
+                            )}
+                            {onInject && (
+                                <button onClick={onInject} className={`flex items-center gap-1 text-[10px] font-bold px-2.5 py-1 rounded-lg border ${t.chip} active:scale-95 transition-transform`} title="把这段观测补发到和 ta 的聊天里（重 roll 后保底用）">
+                                    <PaperPlaneTilt size={11} weight="fill" className="text-sky-500" />发到聊天
+                                </button>
+                            )}
+                        </div>
                     )}
                 </div>
             )}
@@ -1201,6 +1220,20 @@ const WorldView: React.FC<{
         setRerollTarget(null); setRerollDir('');
     };
 
+    // 手动把某角色最新一拍补发到「和 ta 的聊天」（保底）：重 roll 后不会自动注入 world_card，
+    // 删掉旧卡片想换上新观测、或当时漏注入时，点这里补一张进上下文与记忆。
+    const injectBeatToChat = async (charId: string) => {
+        if (!latest) { addToast('还没有可发送的观测', 'error'); return; }
+        const beat = latest.beats.find(b => b.charId === charId);
+        if (!beat) { addToast('这一轮 ta 还没演出来', 'error'); return; }
+        try {
+            await injectWorldCard(world, beat, latest.round, latest.storyTime);
+            addToast(`已把这段观测发到和 ${beat.charName} 的聊天里`, 'success');
+        } catch {
+            addToast('发送失败，稍后再试', 'error');
+        }
+    };
+
     // 拜访视图的住房编排：配置的小屋 + 没分配的成员各自独居
     const visitHouses = useMemo(() => {
         const out: { house: WorldHouse; residents: CharacterProfile[] }[] = [];
@@ -1225,6 +1258,19 @@ const WorldView: React.FC<{
 
     /** 编辑/删除手机里的生成内容（动态/备忘落 episode；私聊/群聊落 world.threads）。newText=null 表示删除。 */
     const applyContentEdit = async (target: WHEditTarget, newText: string | null) => {
+        if (target.type === 'comment') {
+            // 朋友圈评论删除：feedReactions[key].comments 按下标删一条；删空了就把整条反应去掉
+            const rx = world.feedReactions?.[target.key];
+            if (!rx) return;
+            const comments = rx.comments.filter((_, i) => i !== target.idx);
+            const fr = { ...world.feedReactions };
+            if (comments.length === 0 && !rx.likes) delete fr[target.key];
+            else fr[target.key] = { ...rx, comments };
+            await DB.saveWorld({ ...world, feedReactions: fr, updatedAt: Date.now() });
+            onWorldUpdated();
+            addToast('已删除', 'success');
+            return;
+        }
         if (target.type === 'post' || target.type === 'memo') {
             const ep = episodes.find(e => e.round === target.round);
             const beat = ep?.beats.find(b => b.charId === target.charId);
@@ -1552,6 +1598,7 @@ const WorldView: React.FC<{
                                                     onPhone={() => setPhoneView({ ownerId: r.id })}
                                                     onDirective={(impulseText, text) => sendDirective(r.id, impulseText, text)}
                                                     onReroll={latest?.beats.some(b => b.charId === r.id) ? () => { setRerollDir(''); setRerollTarget({ charId: r.id, charName: r.name }); } : undefined}
+                                                    onInject={world.timeMode !== 'sim' && world.injectToChat !== false && latest?.beats.some(b => b.charId === r.id) ? () => injectBeatToChat(r.id) : undefined}
                                                 />
                                             ))}
                                         </div>
