@@ -129,6 +129,7 @@ setAppPayloadWarmer((id: AppID) => { const c = APP_BY_ID[id]; if (c) warmLazy(c)
 
 import { Like520Controller, shouldShowLike520Popup } from './Like520Event';
 import { UpdateNotificationController, shouldShowUpdateNotification } from './UpdateNotificationEvent';
+import { AuthorLetterController, shouldShowAuthorLetter } from './AuthorLetterEvent';
 import { WorkerUpdateReminderController, shouldShowWorkerUpdateReminder } from './WorkerUpdateReminderEvent';
 import { formatBytes } from '../utils/format';
 import { AppID } from '../types';
@@ -552,6 +553,22 @@ const PhoneShell: React.FC = () => {
     openApp(AppID.Settings);
   };
 
+  // 「致用户的一封信」(2026-06) — 作者糯米鸡的一次性公告，优先级排在免责声明之后、
+  // 其它弹窗之前。未读过的用户强制接到一次。
+  const [showAuthorLetter, setShowAuthorLetter] = useState(() => {
+    try {
+      return !!(localStorage.getItem(DISCLAIMER_KEY)) && shouldShowAuthorLetter();
+    } catch { return false; }
+  });
+
+  useEffect(() => {
+    if (!showDisclaimer && !showImportRecoveryPrompt && !showAuthorLetter) {
+      if (shouldShowAuthorLetter()) {
+        setShowAuthorLetter(true);
+      }
+    }
+  }, [showDisclaimer, showImportRecoveryPrompt, showAuthorLetter]);
+
   // Version update popup (2026-04) — forced once per user who hasn't seen it yet
   const [showUpdateNotification, setShowUpdateNotification] = useState(() => {
     try {
@@ -560,30 +577,30 @@ const PhoneShell: React.FC = () => {
   });
 
   useEffect(() => {
-    if (!showDisclaimer && !showImportRecoveryPrompt && !showUpdateNotification) {
+    if (!showDisclaimer && !showImportRecoveryPrompt && !showAuthorLetter && !showUpdateNotification) {
       if (shouldShowUpdateNotification()) {
         setShowUpdateNotification(true);
       }
     }
-  }, [showDisclaimer, showImportRecoveryPrompt, showUpdateNotification]);
+  }, [showDisclaimer, showImportRecoveryPrompt, showAuthorLetter, showUpdateNotification]);
 
   // 520 特别活动弹窗（2026-05-20 当天，且没被 dismiss / completed）
   // 一次性：用户点过任何按钮就标记 dismissed，下次刷新不再出现；
   // API 配置改成弹窗内嵌，配完直接进活动，不再需要把弹窗暂存让位给 Settings。
   const [showLike520Popup, setShowLike520Popup] = useState(false);
   useEffect(() => {
-    if (showDisclaimer || showImportRecoveryPrompt || showUpdateNotification) return;
+    if (showDisclaimer || showImportRecoveryPrompt || showAuthorLetter || showUpdateNotification) return;
     if (!isDataLoaded) return;
     if (shouldShowLike520Popup()) setShowLike520Popup(true);
-  }, [showDisclaimer, showImportRecoveryPrompt, showUpdateNotification, isDataLoaded]);
+  }, [showDisclaimer, showImportRecoveryPrompt, showAuthorLetter, showUpdateNotification, isDataLoaded]);
 
   // Worker 后端更新提醒 — 只对启用了 Instant Push 的用户弹，且当前 worker 版本未确认过
   const [showWorkerUpdateReminder, setShowWorkerUpdateReminder] = useState(false);
   useEffect(() => {
-    if (showDisclaimer || showImportRecoveryPrompt || showUpdateNotification || showLike520Popup) return;
+    if (showDisclaimer || showImportRecoveryPrompt || showAuthorLetter || showUpdateNotification || showLike520Popup) return;
     if (!isDataLoaded) return;
     if (shouldShowWorkerUpdateReminder()) setShowWorkerUpdateReminder(true);
-  }, [showDisclaimer, showImportRecoveryPrompt, showUpdateNotification, showLike520Popup, isDataLoaded]);
+  }, [showDisclaimer, showImportRecoveryPrompt, showAuthorLetter, showUpdateNotification, showLike520Popup, isDataLoaded]);
 
   // Capacitor Native Handling
   useEffect(() => {
@@ -901,20 +918,25 @@ const PhoneShell: React.FC = () => {
          />
        )}
 
+       {/* 「致用户的一封信」(2026-06) — 作者公告，强制一次 */}
+       {!showDisclaimer && !showImportRecoveryPrompt && showAuthorLetter && (
+         <AuthorLetterController onClose={() => setShowAuthorLetter(false)} />
+       )}
+
        {/* Version update popup (2026-04) — forced until acknowledged */}
-       {!showDisclaimer && !showImportRecoveryPrompt && showUpdateNotification && (
+       {!showDisclaimer && !showImportRecoveryPrompt && !showAuthorLetter && showUpdateNotification && (
          <UpdateNotificationController onClose={() => setShowUpdateNotification(false)} />
        )}
 
        {/* 520 特别活动弹窗（2026-05-20 当天，一次性） */}
-       {!showDisclaimer && !showImportRecoveryPrompt && !showUpdateNotification && showLike520Popup && (
+       {!showDisclaimer && !showImportRecoveryPrompt && !showAuthorLetter && !showUpdateNotification && showLike520Popup && (
          <Like520Controller
            onClose={() => setShowLike520Popup(false)}
          />
        )}
 
        {/* Worker 后端更新提醒（仅启用 Instant Push 的用户，每个 worker 版本一次） */}
-       {!showDisclaimer && !showImportRecoveryPrompt && !showUpdateNotification && !showLike520Popup && showWorkerUpdateReminder && (
+       {!showDisclaimer && !showImportRecoveryPrompt && !showAuthorLetter && !showUpdateNotification && !showLike520Popup && showWorkerUpdateReminder && (
          <WorkerUpdateReminderController
            onClose={() => setShowWorkerUpdateReminder(false)}
          />
