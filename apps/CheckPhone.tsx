@@ -8,7 +8,7 @@ import { safeResponseJson } from '../utils/safeApi';
 import { injectMemoryPalace } from '../utils/memoryPalace/pipeline';
 import {
     runRealConversation, runNpcConversation, upsertContact, matchRealChar,
-    clampAffinity, normName,
+    clampAffinity, normName, flipTranscript,
 } from '../utils/relationshipChat';
 import PersonaSim, { LifeLog, generatePersonaScript } from './PersonaSim';
 import { usePersonaSim, personaSimStore } from '../utils/personaSimStore';
@@ -164,6 +164,14 @@ const CheckPhone: React.FC = () => {
     const sim = usePersonaSim();
     const [showInner, setShowInner] = useState(false);
 
+    // 二次确认弹窗：所有删除/移除/清空都先走这里
+    const [confirmState, setConfirmState] = useState<{
+        title: string; desc?: string; confirmLabel?: string; danger?: boolean; onConfirm: () => void;
+    } | null>(null);
+    const askConfirm = (opts: { title: string; desc?: string; confirmLabel?: string; danger?: boolean; onConfirm: () => void }) => setConfirmState(opts);
+    // Messages 详情：长 transcript 默认只渲染最新 50 行，其余折叠
+    const [transcriptExpanded, setTranscriptExpanded] = useState(false);
+
     // Swipe tracking for paging
     const touchStartX = useRef<number | null>(null);
     const touchStartY = useRef<number | null>(null);
@@ -173,6 +181,12 @@ const CheckPhone: React.FC = () => {
     const customApps = targetChar?.phoneState?.customApps || [];
     const contacts = targetChar?.phoneState?.contacts || [];
     const allowFictional = targetChar?.phoneState?.allowFictionalContacts !== false;
+
+    // 人际关系里永远不出现「用户自己」——机主的通讯录是 TA 背着用户的社交圈，把 user 算进来逻辑很绕
+    const isUserName = (name?: string) => !!name && !!userProfile?.name && normName(name) === normName(userProfile.name);
+    const linkedCharOf = (c: PhoneContact) => (c.linkedCharId ? characters.find(ch => ch.id === c.linkedCharId) : undefined);
+    // 真人联系人复用其神经链接角色的头像，否则用联系人自带头像
+    const contactAvatar = (c: PhoneContact): string | undefined => linkedCharOf(c)?.avatar || c.avatar;
 
     useEffect(() => {
         if (targetChar) {
@@ -258,6 +272,66 @@ const CheckPhone: React.FC = () => {
         }
 
         addToast('记录已删除', 'success');
+    };
+
+    // 一键清空 Messages 归档里的全部聊天记录（含其在角色私聊里落的卡片）
+    const handleClearAllChats = async () => {
+        if (!targetChar) return;
+        const all = targetChar.phoneState?.records || [];
+        const chats = all.filter(r => r.type === 'chat');
+        for (const r of chats) {
+            if (r.systemMessageId) await DB.deleteMessage(r.systemMessageId);
+        }
+        updateCharacter(targetChar.id, {
+            phoneState: { ...targetChar.phoneState, records: all.filter(r => r.type !== 'chat') },
+        });
+        setSelectedChatRecord(null);
+        setActiveAppId('chat');
+        addToast('已清空全部聊天记录', 'success');
+    };
+
+    // 把 Messages 归档里的一条聊天记录「转移/绑定」到人际关系系统。
+    // 标题命中神经链接里的真实角色 → 绑成 real，并把这段对话镜像进对方手机（双方同步）。
+    const handleBindRecordToRelationship = async (record: PhoneEvidence) => {
+        if (!targetChar) return;
+        const pureName = (record.title || '').replace(/[（(].*?[）)]/g, '').trim() || record.title || '';
+        if (!pureName || isUserName(pureName)) { addToast('无法绑定该记录', 'error'); return; }
+        const roster = characters.filter(c => c.id !== targetChar.id).map(c => ({ id: c.id, name: c.name }));
+        const linkedId = matchRealChar(pureName, roster);
+        const linkedChar = linkedId ? characters.find(c => c.id === linkedId) : undefined;
+        const kind: PhoneContact['kind'] = linkedId ? 'real' : 'npc';
+
+        // 机主侧：upsert 联系人 + 把这条记录挂到该联系人
+        let newCid: string | undefined;
+        updateCharacter(targetChar.id, (cur) => {
+            const cs = upsertContact(cur.phoneState?.contacts || [], {
+                name: pureName, kind, linkedCharId: linkedId, avatar: linkedChar?.avatar, lastInteraction: Date.now(),
+            });
+            newCid = cs.find(c => normName(c.name) === normName(pureName))?.id;
+            const recs = (cur.phoneState?.records || []).map(r => r.id === record.id ? { ...r, contactId: newCid } : r);
+            return { phoneState: { ...cur.phoneState, contacts: cs, records: recs } };
+        });
+
+        // 真实角色 → 镜像进对方手机：翻转视角写一条 chat 记录 + 互相 upsert 联系人
+        if (linkedChar) {
+            const flipped = flipTranscript(record.detail || '');
+            const now = Date.now();
+            updateCharacter(linkedChar.id, (cur) => {
+                const cs = upsertContact(cur.phoneState?.contacts || [], {
+                    name: targetChar.name, kind: 'real', linkedCharId: targetChar.id, avatar: targetChar.avatar, lastInteraction: now,
+                });
+                const cid = cs.find(c => c.linkedCharId === targetChar.id || normName(c.name) === normName(targetChar.name))?.id;
+                const recs = cur.phoneState?.records || [];
+                const existing = recs.find(r => r.type === 'chat' && (r.contactId === cid || normName(r.title) === normName(targetChar.name)));
+                const nextRecs = existing
+                    ? recs.map(r => r.id === existing.id ? { ...r, detail: flipped, timestamp: now, contactId: cid } : r)
+                    : [...recs, { id: `rec-${now}-${Math.random()}`, type: 'chat', title: targetChar.name, detail: flipped, timestamp: now, contactId: cid }];
+                return { phoneState: { ...cur.phoneState, contacts: cs, records: nextRecs } };
+            });
+            addToast(`已绑定到人际关系 · 已与 ${linkedChar.name} 双向同步`, 'success');
+        } else {
+            addToast('已绑定到人际关系（虚构联系人）', 'success');
+        }
     };
 
     const handleDeleteApp = (appId: string) => {
@@ -453,6 +527,8 @@ ${layoutHint[layout || 'generic']}`;
                     if (isContactBearing) {
                         // 名字可能带「(身份)」后缀，剥出纯名字
                         const pureName = recordTitle.replace(/[（(].*?[）)]/g, '').trim() || recordTitle;
+                        // 人际关系里不收录用户自己：机主的社交圈不该把 user 当成一个联系人
+                        if (isUserName(pureName)) { await new Promise(r => setTimeout(r, 5)); continue; }
                         const linkedId = item.kind === 'real'
                             ? (matchRealChar(item.linkedName || pureName, roster) || matchRealChar(pureName, roster))
                             : matchRealChar(pureName, roster); // npc 也兜底匹配一次，防 LLM 漏标
@@ -467,6 +543,7 @@ ${layoutHint[layout || 'generic']}`;
                             identity: item.identity,
                             kind,
                             linkedCharId: linkedId,
+                            avatar: linkedId ? characters.find(c => c.id === linkedId)?.avatar : undefined,
                             affinity: typeof item.affinity === 'number' ? item.affinity : undefined,
                             note: type === 'contacts' ? recordDetail : undefined,
                             lastInteraction: Date.now(),
@@ -536,69 +613,8 @@ ${layoutHint[layout || 'generic']}`;
         }
     };
 
-    // --- Continue Chat Logic ---
-    const handleContinueChat = async () => {
-        if (!selectedChatRecord || !targetChar || !apiConfig.apiKey) return;
-        setIsLoading(true);
-
-        try {
-            // 记忆宫殿按「对方人名」检索（人际关系系统输入契约）
-            const recentForMp = await DB.getRecentMessagesByCharId(
-                targetChar.id,
-                targetChar.contextLimit && targetChar.contextLimit > 0 ? targetChar.contextLimit : 500,
-            );
-            await injectMemoryPalace(targetChar, recentForMp, selectedChatRecord.title, userProfile.name);
-            const context = ContextBuilder.buildCoreContext(targetChar, userProfile, true);
-            const prompt = `${context}
-
-### [Task: Continue Conversation]
-Roleplay: You are "${targetChar.name}". You are chatting on your phone with "${selectedChatRecord.title}".
-Current History:
-"""
-${selectedChatRecord.detail}
-"""
-
-Task: Please continue this conversation for 3-5 more turns.
-Style: Casual, IM style.
-Format:
-- Use "我: ..." for yourself (${targetChar.name}).
-- Use "对方: ..." for the contact (${selectedChatRecord.title}).
-- Only output the new dialogue lines. Do NOT repeat history.
-`;
-
-            const response = await fetch(`${apiConfig.baseUrl.replace(/\/+$/, '')}/chat/completions`, {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${apiConfig.apiKey}` },
-                body: JSON.stringify({
-                    model: apiConfig.model,
-                    messages: [{ role: "user", content: prompt }],
-                    temperature: 0.85
-                })
-            });
-
-            if (response.ok) {
-                const data = await safeResponseJson(response);
-                let newLines = data.choices[0].message.content.trim();
-                newLines = newLines.replace(/```/g, '');
-
-                const updatedDetail = `${selectedChatRecord.detail}\n${newLines}`;
-                const updatedRecord = { ...selectedChatRecord, detail: updatedDetail };
-                setSelectedChatRecord(updatedRecord);
-
-                const allRecords = targetChar.phoneState?.records || [];
-                const updatedRecords = allRecords.map(r => r.id === updatedRecord.id ? updatedRecord : r);
-                updateCharacter(targetChar.id, {
-                    phoneState: { ...targetChar.phoneState, records: updatedRecords }
-                });
-            }
-
-        } catch (e) {
-            console.error(e);
-            addToast('续写失败', 'error');
-        } finally {
-            setIsLoading(false);
-        }
-    };
+    // 注：旧的「续写聊天 / 拱火」(handleContinueChat) 已移除 —— Messages 现在是只读归档，
+    // 新的来往一律走「人际关系」(真人双向对话 / NPC 脑补)。
 
     // ============================================================
     //  人际关系系统 · Handlers
@@ -859,10 +875,8 @@ Format:
 
     const momentsSub = socialRecords.length ? `${socialRecords.length} new posts` : 'nothing shared';
     const taobaoSub = orderRecords.length ? `${orderRecords.length} items in cart` : 'cart is empty';
-    // 未读 = 上次打开 Messages 之后才生成的聊天记录；打开即清零，不再一直挂红点
-    const chatReadAt = targetChar?.phoneState?.chatReadAt || 0;
-    const unreadChats = chatRecords.filter(r => r.timestamp > chatReadAt).length;
-    const messageSub = chatRecords.length === 0 ? 'no messages' : unreadChats ? `${unreadChats} unread messages` : 'all caught up';
+    // Messages 已是只读归档：不再有「未读」概念
+    const messageSub = chatRecords.length === 0 ? 'archive · empty' : `archive · ${chatRecords.length} threads`;
 
     // pseudo screen-time + weather (decorative, deterministic per char)
     const seed = charName.split('').reduce((a, c) => a + c.charCodeAt(0), 0);
@@ -888,23 +902,44 @@ Format:
     // ============================================================
     //  SUB-APPS
     // ============================================================
+    // 找出某条聊天记录对应的联系人（用于复用真人头像）
+    const contactOfRecord = (r: PhoneEvidence): PhoneContact | undefined =>
+        contacts.find(c => (r.contactId && c.id === r.contactId) || normName(c.name) === normName(r.title));
+
     const renderChatList = () => {
         const accent = '#8b9cff';
         const list = records.filter(r => r.type === 'chat').sort((a, b) => b.timestamp - a.timestamp);
         return (
             <SubAppShell>
-                <TermHeader title="Messages" sub={`${list.length} threads`} accent={accent} onBack={() => setActiveAppId('home')} />
-                <div className="flex-1 overflow-y-auto px-4 pt-2 space-y-2.5 no-scrollbar pb-28 overscroll-contain">
-                    {list.length === 0 && <EmptyState text="暂无聊天记录" />}
+                <TermHeader title="Messages" sub="已归档 · 只读" accent={accent} onBack={() => setActiveAppId('home')}
+                    right={list.length > 0 ? (
+                        <button onClick={() => askConfirm({
+                            title: '清空全部聊天记录？', desc: `将删除这台手机里归档的全部 ${list.length} 段聊天记录，且无法恢复。`,
+                            confirmLabel: '清空', danger: true, onConfirm: handleClearAllChats,
+                        })} className="text-rose-300/80 active:scale-90 transition"><Trash size={18} weight="bold" /></button>
+                    ) : undefined} />
+                {/* 归档说明：旧的 Messages 模式已不再更新，新的对话走「人际关系」 */}
+                <div className="px-4 pt-1 pb-2 shrink-0">
+                    <div className="rounded-xl px-3 py-2 bg-white/[0.04] border border-white/[0.07] text-[11px] text-white/55 leading-relaxed">
+                        这是旧版聊天归档，已停止更新。新的来往请在「人际关系」里发起；可把某段记录绑定过去。
+                    </div>
+                </div>
+                <div className="flex-1 overflow-y-auto px-4 pt-1 space-y-2.5 no-scrollbar pb-28 overscroll-contain">
+                    {list.length === 0 && <EmptyState text="归档里没有聊天记录" />}
                     {list.map(r => {
                         const last = r.detail.split('\n').pop() || '...';
+                        const av = contactOfRecord(r) ? contactAvatar(contactOfRecord(r)!) : undefined;
                         return (
-                            <div key={r.id} onClick={() => { setSelectedChatRecord(r); setActiveAppId('chat_detail'); }}
+                            <div key={r.id} onClick={() => { setSelectedChatRecord(r); setTranscriptExpanded(false); setActiveAppId('chat_detail'); }}
                                 className="group relative flex items-center gap-3.5 rounded-2xl p-3.5 bg-white/[0.035] border border-white/[0.06] active:scale-[0.99] transition cursor-pointer animate-fade-in">
-                                <div className="w-12 h-12 rounded-2xl flex items-center justify-center shrink-0 text-white font-semibold text-lg"
-                                    style={{ background: `linear-gradient(135deg, ${accent}40, ${accent}10)`, boxShadow: `inset 0 0 18px ${accent}25` }}>
-                                    {r.title[0]}
-                                </div>
+                                {av ? (
+                                    <img src={av} alt="" className="w-12 h-12 rounded-2xl object-cover shrink-0" />
+                                ) : (
+                                    <div className="w-12 h-12 rounded-2xl flex items-center justify-center shrink-0 text-white font-semibold text-lg"
+                                        style={{ background: `linear-gradient(135deg, ${accent}40, ${accent}10)`, boxShadow: `inset 0 0 18px ${accent}25` }}>
+                                        {r.title[0]}
+                                    </div>
+                                )}
                                 <div className="flex-1 min-w-0">
                                     <div className="flex justify-between items-baseline gap-2">
                                         <span className="font-semibold text-[13.5px] text-white/95 truncate">{r.title}</span>
@@ -912,13 +947,15 @@ Format:
                                     </div>
                                     <div className="text-[11.5px] text-white/45 truncate mt-0.5">{last.replace(/^(我|对方|Me|Them)[:：]\s*/, '')}</div>
                                 </div>
-                                <button onClick={(e) => { e.stopPropagation(); handleDeleteRecord(r); }}
+                                <button onClick={(e) => { e.stopPropagation(); askConfirm({
+                                    title: '删除这段聊天记录？', desc: `「${r.title}」的这段归档记录将被删除。`,
+                                    confirmLabel: '删除', danger: true, onConfirm: () => handleDeleteRecord(r),
+                                }); }}
                                     className="absolute top-2 right-2 w-5 h-5 bg-rose-500/80 text-white rounded-full flex items-center justify-center text-[11px] leading-none opacity-0 group-hover:opacity-100 transition">×</button>
                             </div>
                         );
                     })}
                 </div>
-                <RefreshFab onClick={() => handleGenerate('chat')} label="刷新消息" accent={accent} loading={isLoading} />
             </SubAppShell>
         );
     };
@@ -932,18 +969,35 @@ Format:
             const content = line.replace(/^(我|Me|对方|Them|[\w一-龥]+)[:：]\s*/, '');
             return { isMe, content };
         });
+        // 渲染保护：长 transcript 默认只渲染最新 50 行，避免一次性塞太多气泡把页面卡爆（同 chatapp）
+        const RENDER_CAP = 50;
+        const hiddenCount = transcriptExpanded ? 0 : Math.max(0, parsedLines.length - RENDER_CAP);
+        const shownLines = hiddenCount > 0 ? parsedLines.slice(-RENDER_CAP) : parsedLines;
+        const contact = contactOfRecord(selectedChatRecord);
+        const partnerAvatar = contact ? contactAvatar(contact) : undefined;
+        const linkedReal = contact && contact.kind === 'real' && !!contact.linkedCharId;
 
         return (
             <SubAppShell>
-                <TermHeader title={selectedChatRecord.title} accent={accent} onBack={() => setActiveAppId('chat')} />
+                <TermHeader title={selectedChatRecord.title} sub="归档 · 只读" accent={accent} onBack={() => setActiveAppId('chat')} />
                 <div className="flex-1 overflow-y-auto px-4 py-3 space-y-3 no-scrollbar overscroll-contain min-h-0">
-                    {parsedLines.map((msg, idx) => (
+                    {hiddenCount > 0 && (
+                        <button onClick={() => setTranscriptExpanded(true)}
+                            className="w-full py-2 mb-1 rounded-xl text-[11.5px] font-semibold text-white/55 bg-white/[0.04] border border-white/[0.07] active:scale-[0.99] transition">
+                            ▲ 展开更早的 {hiddenCount} 条消息
+                        </button>
+                    )}
+                    {shownLines.map((msg, idx) => (
                         <div key={idx} className={`flex items-end gap-2 ${msg.isMe ? 'justify-end' : 'justify-start'}`}>
                             {!msg.isMe && (
-                                <div className="w-8 h-8 rounded-xl flex items-center justify-center text-xs text-white shrink-0"
-                                    style={{ background: `linear-gradient(135deg, ${accent}40, ${accent}10)` }}>
-                                    {selectedChatRecord.title[0]}
-                                </div>
+                                partnerAvatar ? (
+                                    <img src={partnerAvatar} alt="" className="w-8 h-8 rounded-xl object-cover shrink-0" />
+                                ) : (
+                                    <div className="w-8 h-8 rounded-xl flex items-center justify-center text-xs text-white shrink-0"
+                                        style={{ background: `linear-gradient(135deg, ${accent}40, ${accent}10)` }}>
+                                        {selectedChatRecord.title[0]}
+                                    </div>
+                                )
                             )}
                             <div className={`px-3.5 py-2.5 rounded-2xl max-w-[74%] text-[13px] leading-relaxed break-words ${
                                 msg.isMe
@@ -956,21 +1010,20 @@ Format:
                             {msg.isMe && <img src={targetChar.avatar} className="w-8 h-8 rounded-xl object-cover shrink-0" />}
                         </div>
                     ))}
-                    {isLoading && (
-                        <div className="flex justify-center py-4">
-                            <div className="flex gap-1.5">
-                                <div className="w-2 h-2 rounded-full animate-dot-pulse" style={{ background: accent }} />
-                                <div className="w-2 h-2 rounded-full animate-dot-pulse" style={{ background: accent, animationDelay: '0.2s' }} />
-                                <div className="w-2 h-2 rounded-full animate-dot-pulse" style={{ background: accent, animationDelay: '0.4s' }} />
-                            </div>
-                        </div>
-                    )}
                     <div ref={chatEndRef} />
                 </div>
+                {/* 归档只读：不再生成后续；改为「绑定到人际关系」（真人会双向同步） */}
                 <div className="shrink-0 w-full p-4 pb-6">
-                    <button onClick={handleContinueChat} disabled={isLoading}
+                    <button onClick={() => askConfirm({
+                        title: '绑定到人际关系？',
+                        desc: linkedReal
+                            ? `已与神经链接里的「${selectedChatRecord.title}」匹配，绑定后这段对话会同步到对方手机。`
+                            : `将把「${selectedChatRecord.title}」加进人际关系（未匹配到真实角色，按虚构联系人处理）。`,
+                        confirmLabel: '绑定',
+                        onConfirm: () => handleBindRecordToRelationship(selectedChatRecord),
+                    })}
                         className="w-full py-3 rounded-2xl text-[13px] font-semibold text-white/90 bg-white/[0.06] border border-white/[0.08] active:scale-[0.99] transition flex items-center justify-center gap-2">
-                        {isLoading ? '对方正在输入…' : '偷看后续 / 拱火 🔥'}
+                        <LinkSimple size={16} weight="bold" /> 绑定到人际关系
                     </button>
                 </div>
             </SubAppShell>
@@ -1136,7 +1189,8 @@ Format:
 
     const renderContactsList = () => {
         const accent = '#f472b6';
-        const list = [...contacts].sort((a, b) => (b.lastInteraction || b.createdAt) - (a.lastInteraction || a.createdAt));
+        // 人际关系里不出现用户自己
+        const list = contacts.filter(c => !isUserName(c.name)).sort((a, b) => (b.lastInteraction || b.createdAt) - (a.lastInteraction || a.createdAt));
         return (
             <SubAppShell>
                 <TermHeader title="人际关系" sub={`${list.length} contacts`} accent={accent} onBack={() => setActiveAppId('home')}
@@ -1156,13 +1210,18 @@ Format:
                     {list.map(c => {
                         const badge = kindBadge(c);
                         const dimmed = c.status === 'deleted' || c.status === 'blocked';
+                        const av = contactAvatar(c);
                         return (
                             <div key={c.id} onClick={() => { setSelectedContact(c); setNoteDraft(c.note || ''); setEditingNote(false); setActiveAppId('contact_detail'); }}
                                 className={`group relative flex items-center gap-3.5 rounded-2xl p-3.5 bg-white/[0.035] border border-white/[0.06] active:scale-[0.99] transition cursor-pointer animate-fade-in ${dimmed ? 'opacity-45' : ''}`}>
-                                <div className="w-12 h-12 rounded-2xl flex items-center justify-center shrink-0 text-white font-semibold text-lg"
-                                    style={{ background: `linear-gradient(135deg, ${accent}40, ${accent}10)`, boxShadow: `inset 0 0 18px ${accent}25` }}>
-                                    {c.name[0]}
-                                </div>
+                                {av ? (
+                                    <img src={av} alt="" className="w-12 h-12 rounded-2xl object-cover shrink-0" />
+                                ) : (
+                                    <div className="w-12 h-12 rounded-2xl flex items-center justify-center shrink-0 text-white font-semibold text-lg"
+                                        style={{ background: `linear-gradient(135deg, ${accent}40, ${accent}10)`, boxShadow: `inset 0 0 18px ${accent}25` }}>
+                                        {c.name[0]}
+                                    </div>
+                                )}
                                 <div className="flex-1 min-w-0">
                                     <div className="flex items-center gap-2">
                                         <span className="font-semibold text-[13.5px] text-white/95 truncate">{c.name}</span>
@@ -1193,6 +1252,7 @@ Format:
         const accent = '#f472b6';
         const badge = kindBadge(c);
         const isReal = c.kind === 'real' && !!c.linkedCharId;
+        const av = contactAvatar(c);
         const rec = records.find(r => r.type === 'chat' && (r.contactId === c.id || normName(r.title) === normName(c.name)));
         const lines = rec ? rec.detail.split('\n').filter(l => l.trim()) : [];
         const parsed = lines.map(line => {
@@ -1202,11 +1262,20 @@ Format:
         return (
             <SubAppShell>
                 <TermHeader title={c.name} sub={badge.label} accent={accent} onBack={() => setActiveAppId('contacts')}
-                    right={<button onClick={() => handleRemoveContact(c)} className="text-rose-300/80 active:scale-90 transition"><Trash size={18} weight="bold" /></button>} />
+                    right={<button onClick={() => askConfirm({
+                        title: '移除该联系人？', desc: `将把「${c.name}」从这台手机的通讯录里彻底移除。`,
+                        confirmLabel: '移除', danger: true, onConfirm: () => handleRemoveContact(c),
+                    })} className="text-rose-300/80 active:scale-90 transition"><Trash size={18} weight="bold" /></button>} />
                 <div className="flex-1 overflow-y-auto px-4 pt-1 no-scrollbar pb-28 overscroll-contain space-y-3">
                     {/* 关系卡 */}
                     <div className="rounded-2xl p-4 bg-white/[0.035] border border-white/[0.06]">
-                        <div className="flex items-center gap-2 mb-2.5">
+                        <div className="flex items-center gap-3 mb-2.5">
+                            {av ? (
+                                <img src={av} alt="" className="w-11 h-11 rounded-2xl object-cover shrink-0" />
+                            ) : (
+                                <div className="w-11 h-11 rounded-2xl flex items-center justify-center shrink-0 text-white font-semibold"
+                                    style={{ background: `linear-gradient(135deg, ${accent}40, ${accent}10)` }}>{c.name[0]}</div>
+                            )}
                             <span className="flex items-center gap-1 text-[10px] px-2 py-0.5 rounded-full" style={{ color: badge.color, background: `${badge.color}1f` }}>{badge.icon}{badge.label}</span>
                             {c.identity && <span className="text-[11px] text-white/55">{c.identity}</span>}
                             <span className="ml-auto text-[10px] px-2 py-0.5 rounded-full bg-white/[0.06] text-white/55">{c.status === 'friend' ? '好友' : c.status === 'deleted' ? '已删除' : c.status === 'blocked' ? '已拉黑' : '待定'}</span>
@@ -1241,7 +1310,8 @@ Format:
                     {parsed.length > 0 && (
                         <div className="rounded-2xl p-3 bg-white/[0.025] border border-white/[0.06] space-y-2.5">
                             {parsed.slice(-12).map((m, i) => (
-                                <div key={i} className={`flex ${m.isMe ? 'justify-end' : 'justify-start'}`}>
+                                <div key={i} className={`flex items-end gap-2 ${m.isMe ? 'justify-end' : 'justify-start'}`}>
+                                    {!m.isMe && av && <img src={av} alt="" className="w-6 h-6 rounded-lg object-cover shrink-0" />}
                                     <div className={`px-3 py-2 rounded-2xl max-w-[78%] text-[12.5px] leading-relaxed break-words ${m.isMe ? 'text-white rounded-br-md' : 'bg-white/[0.07] text-white/90 border border-white/[0.06] rounded-bl-md'}`}
                                         style={m.isMe ? { background: `linear-gradient(135deg, ${accent}, ${accent}bb)` } : undefined}>{m.content}</div>
                                 </div>
@@ -1279,10 +1349,16 @@ Format:
                             <button onClick={() => handleSetContactStatus(c, 'friend')} className="flex-1 py-2.5 rounded-xl text-[12px] font-semibold text-emerald-200 bg-emerald-400/15 border border-emerald-400/20 active:scale-[0.99] transition flex items-center justify-center gap-1.5"><UserPlus size={14} weight="bold" /> 加好友</button>
                         )}
                         {c.status === 'friend' && (
-                            <button onClick={() => handleSetContactStatus(c, 'deleted')} className="flex-1 py-2.5 rounded-xl text-[12px] font-semibold text-rose-200 bg-rose-400/15 border border-rose-400/20 active:scale-[0.99] transition flex items-center justify-center gap-1.5"><Trash size={14} weight="bold" /> 删好友</button>
+                            <button onClick={() => askConfirm({
+                                title: `删除好友「${c.name}」？`, desc: `${targetChar.name} 会察觉是你在偷看 TA 手机时删的。`,
+                                confirmLabel: '删好友', danger: true, onConfirm: () => handleSetContactStatus(c, 'deleted'),
+                            })} className="flex-1 py-2.5 rounded-xl text-[12px] font-semibold text-rose-200 bg-rose-400/15 border border-rose-400/20 active:scale-[0.99] transition flex items-center justify-center gap-1.5"><Trash size={14} weight="bold" /> 删好友</button>
                         )}
                         {c.status !== 'blocked' && (
-                            <button onClick={() => handleSetContactStatus(c, 'blocked')} className="flex-1 py-2.5 rounded-xl text-[12px] font-semibold text-white/60 bg-white/[0.05] border border-white/[0.08] active:scale-[0.99] transition flex items-center justify-center gap-1.5"><Prohibit size={14} weight="bold" /> 拉黑</button>
+                            <button onClick={() => askConfirm({
+                                title: `拉黑「${c.name}」？`, desc: `${targetChar.name} 会察觉是你在偷看 TA 手机时拉黑的。`,
+                                confirmLabel: '拉黑', danger: true, onConfirm: () => handleSetContactStatus(c, 'blocked'),
+                            })} className="flex-1 py-2.5 rounded-xl text-[12px] font-semibold text-white/60 bg-white/[0.05] border border-white/[0.08] active:scale-[0.99] transition flex items-center justify-center gap-1.5"><Prohibit size={14} weight="bold" /> 拉黑</button>
                         )}
                     </div>
                 </div>
@@ -1865,6 +1941,24 @@ Format:
                         <input value={ncName} onChange={e => setNcName(e.target.value)} placeholder="联系人名字（虚构）" className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-lg text-sm" />
                     )}
                 </div>
+            </Modal>
+
+            {/* 通用二次确认弹窗：删除 / 移除 / 拉黑 / 清空都走这里 */}
+            <Modal
+                isOpen={!!confirmState}
+                title={confirmState?.title || ''}
+                onClose={() => setConfirmState(null)}
+                footer={
+                    <div className="flex gap-3 w-full">
+                        <button onClick={() => setConfirmState(null)}
+                            className="flex-1 py-3 bg-slate-100 text-slate-500 font-bold rounded-2xl active:scale-95 transition-transform">取消</button>
+                        <button onClick={() => { const cb = confirmState?.onConfirm; setConfirmState(null); cb?.(); }}
+                            className={`flex-1 py-3 font-bold rounded-2xl text-white active:scale-95 transition-transform ${confirmState?.danger ? 'bg-rose-500' : 'bg-pink-500'}`}>
+                            {confirmState?.confirmLabel || '确定'}
+                        </button>
+                    </div>
+                }>
+                <p className="text-[13px] text-slate-500 leading-relaxed text-center">{confirmState?.desc || '此操作无法撤销。'}</p>
             </Modal>
         </div>
     );
