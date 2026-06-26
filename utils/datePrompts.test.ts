@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { DatePrompts, DATE_STYLE_PRESETS, extractObservation, stripObservation, hasObservation, OBSERVE_OPEN, OBSERVE_CLOSE } from './datePrompts';
+import { DatePrompts, DATE_STYLE_PRESETS, extractObservation, stripObservation, hasObservation, resolveObserveFields, OBSERVE_OPEN, OBSERVE_CLOSE } from './datePrompts';
 import type { CharacterProfile, UserProfile, Message } from '../types';
 
 const makeChar = (overrides: Partial<CharacterProfile> = {}): CharacterProfile => ({
@@ -129,6 +129,55 @@ ${OBSERVE_CLOSE}`;
             emojis: [], userText: 'hi', variant: 'send',
         });
         expect(sysOf(off.messages)).not.toContain('观测协议');
+    });
+
+    it('自定义维度：hint 注入提示词，label 只改 HUD（线格式仍用固定中文 key）', async () => {
+        const { messages } = await DatePrompts.buildSessionPayload({
+            char: makeChar({ dateObserve: {
+                enabled: true,
+                fields: { state: { label: '心情指数', hint: '用一个温度词概括此刻心情' } },
+            } }),
+            userProfile: user, allMsgs: [makeMsg({ role: 'assistant', content: '[normal] 开场' }), makeMsg({ content: 'hi' })],
+            emojis: [], userText: 'hi', variant: 'send',
+        });
+        const sys = sysOf(messages);
+        expect(sys).toContain('用一个温度词概括此刻心情'); // 自定义 hint 进了提示词
+        expect(sys).toContain('状态｜');                    // 线格式字段名仍是固定的「状态」
+        expect(sys).not.toContain('心情指数｜');            // 自定义 label 不进线格式（避免解析失配）
+    });
+
+    it('禁用某维度后，提示词里不再出现该字段', async () => {
+        const { messages } = await DatePrompts.buildSessionPayload({
+            char: makeChar({ dateObserve: { enabled: true, fields: { detail: { enabled: false } } } }),
+            userProfile: user, allMsgs: [makeMsg({ role: 'assistant', content: '[normal] 开场' }), makeMsg({ content: 'hi' })],
+            emojis: [], userText: 'hi', variant: 'send',
+        });
+        const sys = sysOf(messages);
+        expect(sys).toContain('观测协议');
+        expect(sys).toContain('时间｜');
+        expect(sys).not.toContain('细节｜');
+    });
+
+    it('四个维度全部禁用时不注入观测块', async () => {
+        const { messages } = await DatePrompts.buildSessionPayload({
+            char: makeChar({ dateObserve: { enabled: true, fields: {
+                time: { enabled: false }, place: { enabled: false }, state: { enabled: false }, detail: { enabled: false },
+            } } }),
+            userProfile: user, allMsgs: [makeMsg({ role: 'assistant', content: '[normal] 开场' }), makeMsg({ content: 'hi' })],
+            emojis: [], userText: 'hi', variant: 'send',
+        });
+        expect(sysOf(messages)).not.toContain('观测协议');
+    });
+
+    it('resolveObserveFields 合并默认+自定义并过滤禁用', () => {
+        const char = makeChar({ name: '阿狸', dateObserve: { enabled: true, fields: {
+            place: { label: '坐标' }, detail: { enabled: false },
+        } } });
+        const fields = resolveObserveFields(char);
+        expect(fields.map(f => f.key)).toEqual(['time', 'place', 'state']); // detail 被过滤
+        expect(fields.find(f => f.key === 'place')!.display).toBe('坐标');   // 自定义展示标签
+        expect(fields.find(f => f.key === 'place')!.label).toBe('地点');     // 线格式字段名不变
+        expect(fields.find(f => f.key === 'place')!.hint).toContain('阿狸'); // {name} 已替换
     });
 
     it('extractObservation 解析四字段并剥出正文', () => {

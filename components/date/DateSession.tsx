@@ -749,7 +749,7 @@ const DateSession: React.FC<DateSessionProps> = ({
                         {/* 观测协议 OBSERVE 开关：开启后回复带「时间/地点/状态/细节」全息 HUD */}
                         <button onClick={() => {
                                 const next = !observeEnabled;
-                                updateCharacter(char.id, { dateObserve: { enabled: next } });
+                                updateCharacter(char.id, { dateObserve: { ...char.dateObserve, enabled: next } });
                                 addToast(next ? '观测已开启 · 下条回复生效' : '观测已关闭', 'info');
                                 setShowMenu(false); setShowVoiceLangPicker(false);
                             }}
@@ -775,7 +775,7 @@ const DateSession: React.FC<DateSessionProps> = ({
             {observeEnabled && !isNovelMode && hasObservation(observation) && (
                 <div className="absolute top-0 left-0 p-4 pt-12 z-[90] pointer-events-none">
                     <div className="pointer-events-auto">
-                        <ObserveHUD observation={observation!} variant="hud" charName={char.name} />
+                        <ObserveHUD observation={observation!} variant="hud" charName={char.name} config={char.dateObserve} />
                     </div>
                 </div>
             )}
@@ -806,7 +806,7 @@ const DateSession: React.FC<DateSessionProps> = ({
                                 return (
                                     <>
                                         {observeEnabled && hasObservation(peekObs) && (
-                                            <div className="max-w-md mx-auto mb-6"><ObserveHUD observation={peekObs} variant="card" charName={char.name} /></div>
+                                            <div className="max-w-md mx-auto mb-6"><ObserveHUD observation={peekObs} variant="card" charName={char.name} config={char.dateObserve} /></div>
                                         )}
                                         <div className={`italic text-center text-sm mb-8 px-4 ${char.dateLightReading ? 'text-stone-400' : 'text-slate-200/50'}`}>
                                             {cleanTextForDisplay(peekBody).split('\n').map((line, idx) => line.trim() && <p key={idx} className="whitespace-pre-wrap leading-relaxed tracking-wide my-2">{line}</p>)}
@@ -845,7 +845,7 @@ const DateSession: React.FC<DateSessionProps> = ({
                                         return (
                                         <div>
                                             {observeEnabled && hasObservation(msgObs) && (
-                                                <ObserveHUD observation={msgObs} variant="card" charName={char.name} />
+                                                <ObserveHUD observation={msgObs} variant="card" charName={char.name} config={char.dateObserve} />
                                             )}
                                             {(msgBody || '').split('\n').map((line, idx) => {
                                                 const cleanLine = cleanTextForDisplay(line);

@@ -11,8 +11,23 @@
 ## 数据模型（`types.ts`）
 
 - `DateObservation`：`{ time?, place?, state?, detail? }`，四个字段全可缺省（模型漏写不崩）。
-- `CharacterProfile.dateObserve?: { enabled?: boolean }`：per-character 开关。
+- `CharacterProfile.dateObserve?: DateObserveConfig`：per-character 配置（开关 + 样式 + 字段自定义）。
+  - `enabled?: boolean`：总开关。
+  - `style?: DateObserveStyleId`：HUD 视觉样式（`hologram` 默认 / `ink` / `neon` / `crystal` / `terminal`）。
+  - `fields?: Partial<Record<keyof DateObservation, DateObserveFieldConfig>>`：四个维度的自定义。
+    - `DateObserveFieldConfig`：`{ label?, hint?, enabled? }`——`label` 只改 HUD 展示标签（**不参与解析**），
+      `hint` 改「这一格让 AI 生成什么」，`enabled:false` 则该维度既不注入提示、HUD 也不渲染。任一项留空回落默认。
 - `DateState.observation?: DateObservation`：当前批次的观测，存进 savedDateState，恢复会话时回填 HUD。
+
+## 样式与自定义（`datePrompts.ts` + `ObserveHUD.tsx` + `ObserveSettings.tsx`）
+
+- **默认维度单一来源**：`OBSERVE_DIMENSIONS`（`datePrompts.ts`）固定四项 `时间/地点/状态/细节`，
+  其 `label` 同时是**线格式字段名**——`buildObserveBlock` 注入时永远用它，所以用户改 `label` 不会让
+  `extractObservation` 失配。`resolveObserveFields(char)` 合并默认 + 自定义并过滤禁用项，HUD 与提示词共用。
+- **五种样式**：`ObserveHUD.tsx` 的 `THEMES` 表，每个主题给一组类名/内联样式，渲染走同一条路径；
+  新增样式 = 往 `THEMES` 加一项 + `OBSERVE_STYLES`（设置面板选择器用，含名称/简介/预览色块）加一项。
+- **设置入口**：`ObserveSettings.tsx`（嵌在 DateSettings）——总开关、样式选择（带实时预览）、
+  每个维度的启用开关 + 显示标签 + 生成提示、「一键重置」（清空 `style` + `fields` 回默认，保留 `enabled`）。
 
 ## 数据流
 
@@ -33,9 +48,10 @@
 | 文件 | 职责 |
 |------|------|
 | `utils/datePrompts.ts` | `buildObserveBlock`（提示词）、`extractObservation`/`stripObservation`/`hasObservation`（解析）、`OBSERVE_OPEN`/`OBSERVE_CLOSE` |
-| `components/date/ObserveHUD.tsx` | 全息面板组件，`variant: 'hud' \| 'card'` |
-| `components/date/DateSession.tsx` | 调 extractObservation、驱动 HUD、持久化、菜单快捷开关 |
-| `components/date/DateSettings.tsx` | 设置面板开关 |
+| `components/date/ObserveHUD.tsx` | 观测面板组件，`variant: 'hud' \| 'card'`、`THEMES` 五样式、`OBSERVE_STYLES` 选择器元数据 |
+| `components/date/ObserveSettings.tsx` | 设置面板：开关 + 样式选择（实时预览）+ 每维度自定义 + 一键重置 |
+| `components/date/DateSession.tsx` | 调 extractObservation、驱动 HUD、持久化、菜单快捷开关（传 `config={char.dateObserve}` 给 HUD） |
+| `components/date/DateSettings.tsx` | 渲染 `<ObserveSettings>` |
 | `utils/datePrompts.test.ts` | 注入 + 解析 + 掉格式容错测试 |
 
 ## 线格式（wire format）

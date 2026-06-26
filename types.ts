@@ -1519,6 +1519,32 @@ export interface DateObservation {
     detail?: string;
 }
 
+/** 观测协议 OBSERVE 的 HUD 视觉样式 id */
+export type DateObserveStyleId = 'hologram' | 'ink' | 'neon' | 'crystal' | 'terminal';
+
+/**
+ * 观测协议单个维度的自定义：显示标签 + 生成提示 + 是否启用。任一项留空即回落默认。
+ * 注意：自定义 label 只影响 HUD 展示——注入提示词时字段名始终用固定中文 key
+ * （时间/地点/状态/细节），保证解析稳定，用户改名不会让 extractObservation 失配。
+ */
+export interface DateObserveFieldConfig {
+    /** HUD 上显示的标签（仅展示用，不参与解析） */
+    label?: string;
+    /** 注入提示词：这个维度具体要生成什么内容 */
+    hint?: string;
+    /** 是否启用该维度（默认 true）。关掉则不注入提示、HUD 也不渲染该行。 */
+    enabled?: boolean;
+}
+
+/** 观测协议 OBSERVE 的 per-character 配置 */
+export interface DateObserveConfig {
+    enabled?: boolean;
+    /** HUD 视觉样式，默认 hologram */
+    style?: DateObserveStyleId;
+    /** 四个维度的标签 / 提示自定义；不填回落默认值 */
+    fields?: Partial<Record<keyof DateObservation, DateObserveFieldConfig>>;
+}
+
 export interface DateState {
     dialogueQueue: DialogueItem[];
     dialogueBatch: DialogueItem[];
@@ -1800,8 +1826,8 @@ export interface CharacterProfile {
   dateSkinSets?: SkinSet[];     // Multiple skin sets for portrait mode
   activeSkinSetId?: string;     // Currently active skin set ID
   dateStyleConfig?: DateStyleConfig; // 见面模式文风（写作风格 / 叙事人称 / 自定义补充）
-  /** 观测协议 OBSERVE：开启后每条回复注入「时间/地点/状态/细节」结构化观测，渲染成全息 HUD */
-  dateObserve?: { enabled?: boolean };
+  /** 观测协议 OBSERVE：开启后每条回复注入「时间/地点/状态/细节」结构化观测，渲染成全息 HUD（样式/字段可自定义） */
+  dateObserve?: DateObserveConfig;
 
   savedDateState?: DateState;
   specialMomentRecords?: Record<string, SpecialMomentRecord>;

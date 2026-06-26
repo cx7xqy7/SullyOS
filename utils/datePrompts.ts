@@ -292,24 +292,65 @@ const cleanObserveValue = (raw: string): string => {
 
 const isObserveOn = (char: CharacterProfile): boolean => char.dateObserve?.enabled === true;
 
-/** 观测块提示词。仅在开关打开时注入；放在 VN 块末尾（场景上下文之后）。 */
-const buildObserveBlock = (charName: string): string => `
+/**
+ * 观测协议四个默认维度。`label` 是注入提示词时的**固定线格式字段名**（解析靠它，
+ * 不随用户自定义改动），`en`/`glyph` 给 HUD 用，`hint` 是默认生成提示（可被
+ * char.dateObserve.fields[key].hint 覆盖；`{name}` 会替换成角色名）。
+ */
+export interface ObserveDimension {
+    key: keyof DateObservation;
+    label: string;   // 线格式字段名（时间/地点/状态/细节），解析依赖，勿改
+    en: string;      // HUD 上的英文小标
+    glyph: string;   // HUD 上的字形符号
+    hint: string;    // 默认生成提示
+}
+
+export const OBSERVE_DIMENSIONS: ObserveDimension[] = [
+    { key: 'time',   label: '时间', en: 'TIME',  glyph: '◷', hint: '结合场景的当下时刻，可比系统时间更具体，如"傍晚六点过，天刚擦黑"' },
+    { key: 'place',  label: '地点', en: 'SITE',  glyph: '⌖', hint: '{name}此刻所在的具体地点与环境' },
+    { key: 'state',  label: '状态', en: 'STATE', glyph: '❖', hint: '{name}的身心状态：情绪、体感、正在经历的内在波动' },
+    { key: 'detail', label: '细节', en: 'TRACE', glyph: '✶', hint: '此刻最值得被注意的一个动作 / 微小细节' },
+];
+
+/** HUD / 设置面板用：合并默认 + 角色自定义，过滤掉被禁用的维度；display = HUD 标签（可自定义） */
+export interface ResolvedObserveField extends ObserveDimension {
+    display: string;
+}
+export const resolveObserveFields = (char: CharacterProfile): ResolvedObserveField[] => {
+    const cfg = char.dateObserve?.fields || {};
+    return OBSERVE_DIMENSIONS
+        .filter(d => cfg[d.key]?.enabled !== false)
+        .map(d => ({
+            ...d,
+            display: (cfg[d.key]?.label || '').trim() || d.label,
+            hint: ((cfg[d.key]?.hint || '').trim() || d.hint).replace(/\{name\}/g, char.name),
+        }));
+};
+
+/**
+ * 观测块提示词。仅在开关打开时注入；放在 VN 块末尾（场景上下文之后）。
+ * 线格式字段名固定用默认 label（保证解析稳定），但每项「生成什么」用角色自定义 hint。
+ * 全部维度被用户关掉时返回空串（等于不注入观测块）。
+ */
+const buildObserveBlock = (char: CharacterProfile): string => {
+    const fields = resolveObserveFields(char);
+    if (fields.length === 0) return '';
+    const lines = fields.map(f => `${f.label}｜（${f.hint}）`).join('\n');
+    return `
 ### 👁 观测协议（OBSERVE，必须严格执行）
-在你**整段回复的最前面**，先输出一段「观测块」，用来让用户全方位观察${charName}此刻的状态。
+在你**整段回复的最前面**，先输出一段「观测块」，用来让用户全方位观察${char.name}此刻的状态。
 观测块**不受**上面「一行一念 / 每行 [emotion] 开头」规则约束——它是独立的元信息，紧接着才是正常的 VN 正文。
 
-格式**必须**逐字如下（四个字段都要给，每项一句话、简洁有画面，别写成大段）：
+格式**必须**逐字如下（每个字段都要给，每项一句话、简洁有画面，别写成大段）：
 ${OBSERVE_OPEN}
-时间｜（结合场景的当下时刻，可比系统时间更具体，如"傍晚六点过，天刚擦黑"）
-地点｜（${charName}此刻所在的具体地点与环境）
-状态｜（${charName}的身心状态：情绪、体感、正在经历的内在波动）
-细节｜（此刻最值得被注意的一个动作 / 微小细节）
+${lines}
 ${OBSERVE_CLOSE}
 
 硬性要求：
 - 开头那行 \`${OBSERVE_OPEN}\` 和结尾那行 \`${OBSERVE_CLOSE}\` **两行定界符都必须原样保留**，各自单独占一行，哪怕你不确定也别省略。
-- 四个字段各占一行，用全角竖线 \`｜\` 分隔标签和内容；不要加序号、不要用 markdown 加粗。
+- 每个字段各占一行，用全角竖线 \`｜\` 分隔标签和内容；标签必须原样用 ${fields.map(f => `「${f.label}」`).join('、')}，不要加序号、不要用 markdown 加粗。
 - 观测块只在整段回复的最开头出现一次，输出完**另起一行**再写 VN 正文（每行 [emotion] 开头）。`;
+};
 
 /**
  * 从模型输出里剥出观测块。返回结构化数据 + 去掉观测块后的正文。
@@ -458,7 +499,7 @@ const buildVNModeBlock = (char: CharacterProfile, userName: string): string => {
     const povBlock = buildPovBlock(styleConfig, char.name, userName);
     const extraBlock = buildExtraStyleBlock(styleConfig);
     const digBlock = isDigDeeperOn(styleConfig) ? `${DIG_DEEPER_BLOCK}\n` : '';
-    const observeBlock = isObserveOn(char) ? buildObserveBlock(char.name) : '';
+    const observeBlock = isObserveOn(char) ? buildObserveBlock(char) : '';
     return `### [Visual Novel Mode: 视觉小说脚本模式]
 你正在与用户进行**面对面**的互动。这不是聊天，是一场真实的见面。
 
@@ -557,7 +598,7 @@ export const DatePrompts = {
 1. **上下文连贯性**: 参考 [最近记录]（注意消息来源标签：[聊天]是文字聊天、[约会]是面对面、[通话]是语音通话）。如果有 [TIME SKIP] 且间隔很久，开启新场景；如果是 [SCENE CONTINUATION]，说明刚刚还在聊天，**必须**自然衔接最近的聊天话题和情绪状态，不要无视之前的对话内容。
 2. **状态一致性**: ${gapHint.includes('天') ? '如果间隔了很多天，可能在发呆、忙碌或者有点落寞。' : '根据最近的聊天内容和情绪来决定当前状态。如果刚聊完，角色的状态应该与聊天内容相呼应。'}
 3. **描写风格**: ${preset.peekHint}。${isObserveOn(char) ? '先按下方「观测协议」输出观测块，再开始描写内容（描写本身不要加任何前缀）。' : '不要输出任何前缀，直接输出描写内容。'}
-${extraBlock ? `\n${extraBlock}` : ''}${isObserveOn(char) ? `\n${buildObserveBlock(char.name)}` : ''}`;
+${extraBlock ? `\n${extraBlock}` : ''}${isObserveOn(char) ? `\n${buildObserveBlock(char)}` : ''}`;
 
         return {
             messages: [
