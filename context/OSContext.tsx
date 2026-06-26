@@ -2793,6 +2793,9 @@ export const OSProvider: React.FC<{ children: React.ReactNode }> = ({ children }
               worldHomeLocal: (mode === 'text_only' || mode === 'full') ? exportWorldHomeLocal() : undefined,
               luckinLocal: (mode === 'text_only' || mode === 'full') ? exportLuckinLocal() : undefined,
               mcdLocal: (mode === 'text_only' || mode === 'full') ? exportMcdLocal() : undefined,
+
+              // 梦境盲盒收藏册（账号级 localStorage，不挂在角色上，需单独随备份带走）
+              dreamCollection: (mode === 'text_only' || mode === 'full') ? (() => { try { const s = localStorage.getItem('os_dream_collection'); return s ? JSON.parse(s) : undefined; } catch { return undefined; } })() : undefined,
           };
 
           const totalSteps = storesToProcess.length + 3;
@@ -3395,6 +3398,7 @@ export const OSProvider: React.FC<{ children: React.ReactNode }> = ({ children }
           }
           if (typeof data.bm25Mode === 'string') localStorage.setItem('bm25_mode', data.bm25Mode);
           if (typeof data.lastActiveCharId === 'string') localStorage.setItem('os_last_active_char_id', data.lastActiveCharId);
+          if (data.dreamCollection && typeof data.dreamCollection === 'object') localStorage.setItem('os_dream_collection', JSON.stringify(data.dreamCollection));
           if (data.eventNotifFlags && typeof data.eventNotifFlags === 'object') {
               for (const [key, val] of Object.entries(data.eventNotifFlags)) {
                   // 只允许 sullyos_ 前缀，避免污染其它键

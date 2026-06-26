@@ -12,7 +12,7 @@ import { safeResponseJson } from '../utils/safeApi';
 import Modal from '../components/os/Modal';
 import DateSession from '../components/date/DateSession';
 import DateSettings from '../components/date/DateSettings';
-import { BookOpen } from '@phosphor-icons/react';
+import { BookOpen, Sparkle, CaretLeft, GearSix } from '@phosphor-icons/react';
 
 const DateApp: React.FC = () => {
     const { closeApp, characters, activeCharacterId, setActiveCharacterId, apiConfig, addToast, updateCharacter, virtualTime, userProfile, memoryPalaceConfig } = useOS();
@@ -33,7 +33,23 @@ const DateApp: React.FC = () => {
     const [mode, setMode] = useState<'select' | 'peek' | 'session' | 'settings' | 'history'>('select');
     // Track previous mode for Settings back navigation
     const [previousMode, setPreviousMode] = useState<'select' | 'peek'>('select');
-    
+
+    // 选择页分页（6 个角色一页，横向翻页）
+    const SELECT_PAGE_SIZE = 6;
+    const pagerRef = useRef<HTMLDivElement>(null);
+    const [selectPage, setSelectPage] = useState(0);
+    const onPagerScroll = () => {
+        const el = pagerRef.current;
+        if (!el || el.clientWidth === 0) return;
+        const p = Math.round(el.scrollLeft / el.clientWidth);
+        setSelectPage(prev => (prev === p ? prev : p));
+    };
+    const goSelectPage = (pi: number) => {
+        const el = pagerRef.current;
+        if (!el) return;
+        el.scrollTo({ left: pi * el.clientWidth, behavior: 'smooth' });
+    };
+
     const [peekStatus, setPeekStatus] = useState<string>('');
     const [peekLoading, setPeekLoading] = useState(false);
     
@@ -440,6 +456,13 @@ const DateApp: React.FC = () => {
         setHasSavedOpening(false);
     };
 
+    // 从选择页直接进设置（不用先进见面再点菜单），改完立绘/观测等即时生效
+    const openSettings = (c: CharacterProfile) => {
+        setActiveCharacterId(c.id);
+        setPreviousMode('select');
+        setMode('settings');
+    };
+
     const openHistory = async (c: CharacterProfile) => {
         setActiveCharacterId(c.id);
         // includeProcessed=true：见面历史完全独立于聊天侧高水位，
@@ -494,32 +517,131 @@ const DateApp: React.FC = () => {
     // --- Render ---
 
     if (mode === 'select' || !char) {
+        // 6 个角色一页，横向翻页
+        const pages: CharacterProfile[][] = [];
+        for (let i = 0; i < characters.length; i += SELECT_PAGE_SIZE) pages.push(characters.slice(i, i + SELECT_PAGE_SIZE));
+        if (pages.length === 0) pages.push([]);
+        // 星点装饰（固定坐标，避免每帧抖动）
+        const stars = [
+            { top: '8%', left: '12%', s: 3, d: 0 }, { top: '14%', left: '82%', s: 2, d: 0.6 },
+            { top: '22%', left: '46%', s: 2, d: 1.2 }, { top: '30%', left: '8%', s: 2, d: 0.3 },
+            { top: '6%', left: '64%', s: 4, d: 0.9 }, { top: '40%', left: '90%', s: 2, d: 1.5 },
+            { top: '52%', left: '4%', s: 3, d: 0.2 }, { top: '60%', left: '72%', s: 2, d: 1.1 },
+            { top: '70%', left: '20%', s: 2, d: 0.7 }, { top: '78%', left: '88%', s: 3, d: 1.4 },
+            { top: '86%', left: '40%', s: 2, d: 0.5 }, { top: '12%', left: '34%', s: 2, d: 1.8 },
+            { top: '46%', left: '56%', s: 2, d: 0.4 }, { top: '64%', left: '48%', s: 3, d: 1.0 },
+        ];
         return (
-            <div className="h-full w-full bg-slate-50 flex flex-col font-light">
-                <div className="border-b border-slate-200 bg-white sticky top-0 z-10" style={{ paddingTop: 'var(--safe-top)' }}>
-                    <div className="h-16 flex items-center justify-between px-4">
-                        <button onClick={closeApp} className="p-2 -ml-2 rounded-full hover:bg-slate-100">
-                            <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor" className="w-6 h-6"><path strokeLinecap="round" strokeLinejoin="round" d="M15.75 19.5 8.25 12l7.5-7.5" /></svg>
+            <div className="h-full w-full relative overflow-hidden flex flex-col font-light"
+                 style={{ background: 'linear-gradient(170deg,#241d4a 0%,#352c66 38%,#473b7e 68%,#5b4d94 100%)' }}>
+                {/* 星空装饰层 */}
+                <div className="pointer-events-none absolute inset-0 overflow-hidden">
+                    <div className="absolute -top-24 -right-20 w-72 h-72 rounded-full" style={{ background: 'radial-gradient(circle, rgba(190,170,255,0.25), transparent 70%)' }} />
+                    <div className="absolute top-1/3 -left-16 w-56 h-56 rounded-full" style={{ background: 'radial-gradient(circle, rgba(244,180,255,0.14), transparent 70%)' }} />
+                    {stars.map((st, i) => (
+                        <span key={i} className="absolute rounded-full bg-white animate-pulse"
+                              style={{ top: st.top, left: st.left, width: st.s, height: st.s, opacity: 0.5, animationDelay: `${st.d}s`, boxShadow: '0 0 6px rgba(255,255,255,0.8)' }} />
+                    ))}
+                    <Sparkle size={16} weight="fill" className="absolute top-[18%] left-[24%] text-violet-200/40" />
+                    <Sparkle size={12} weight="fill" className="absolute top-[55%] right-[16%] text-fuchsia-200/40" />
+                    <Sparkle size={14} weight="fill" className="absolute bottom-[10%] left-[14%] text-cyan-100/30" />
+                </div>
+
+                {/* 顶栏 + 标题 */}
+                <div className="relative z-10 shrink-0" style={{ paddingTop: 'var(--safe-top)' }}>
+                    <div className="flex items-center justify-between px-5 pt-3">
+                        <button onClick={closeApp} className="w-10 h-10 rounded-full bg-white/12 backdrop-blur-md border border-white/25 flex items-center justify-center text-white active:scale-90 transition-transform shadow-lg">
+                            <CaretLeft size={20} weight="bold" />
                         </button>
-                        <span className="font-bold text-slate-700">选择见面对象</span>
-                        <div className="w-8"></div>
+                        <div className="w-10" />
+                    </div>
+                    <div className="text-center mt-1 mb-3 px-6">
+                        <h1 className="text-[27px] font-bold text-white font-serif tracking-[0.12em] drop-shadow-[0_2px_14px_rgba(180,150,255,0.65)]">选择见面对象</h1>
+                        <div className="text-[9px] tracking-[0.5em] text-violet-200/60 mt-1.5">CHOOSE CHARACTER</div>
                     </div>
                 </div>
-                <div className="p-4 grid grid-cols-2 gap-4 overflow-y-auto">
-                    {characters.map(c => (
-                        <div key={c.id} onClick={() => handleCharClick(c)} className="bg-white rounded-2xl p-4 shadow-sm border border-slate-100 active:scale-95 transition-transform flex flex-col items-center gap-3 relative group">
-                            <button 
-                                onClick={(e) => { e.stopPropagation(); openHistory(c); }}
-                                className="absolute top-2 right-2 p-1.5 text-slate-300 hover:text-slate-600 hover:bg-slate-100 rounded-full transition-colors z-20 active:scale-90"
-                            >
-                                <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor" className="w-5 h-5"><path strokeLinecap="round" strokeLinejoin="round" d="M12 6.042A8.967 8.967 0 0 0 6 3.75c-1.052 0-2.062.18-3 .512v14.25A8.987 8.987 0 0 1 6 18c2.305 0 4.408.867 6 2.292m0-14.25a8.966 8.966 0 0 1 6-2.292c1.052 0 2.062.18 3 .512v14.25A8.987 8.987 0 0 0 18 18a8.967 8.967 0 0 0-6 2.292m0-14.25v14.25" /></svg>
-                            </button>
-                            <img src={c.avatar} className="w-16 h-16 rounded-full object-cover" />
-                            <span className="font-bold text-slate-700">{c.name}</span>
-                            {c.savedDateState && <div className="absolute top-2 left-2 w-2 h-2 bg-green-500 rounded-full animate-pulse" title="有存档"></div>}
-                        </div>
-                    ))}
-                </div>
+
+                {/* 分页卡片区 */}
+                {characters.length === 0 ? (
+                    <div className="relative z-10 flex-1 flex flex-col items-center justify-center text-violet-200/60 gap-3">
+                        <Sparkle size={40} weight="light" />
+                        <span className="text-xs tracking-wider">还没有可见面的角色</span>
+                    </div>
+                ) : (
+                    <div ref={pagerRef} onScroll={onPagerScroll}
+                         className="relative z-10 flex-1 min-h-0 flex overflow-x-auto snap-x snap-mandatory no-scrollbar"
+                         style={{ scrollSnapType: 'x mandatory' }}>
+                        {pages.map((page, pi) => (
+                            <div key={pi} className="w-full shrink-0 snap-start h-full overflow-y-auto no-scrollbar px-4">
+                                <div className="grid grid-cols-2 gap-3.5 pb-6">
+                                    {page.map(c => (
+                                        <div key={c.id} onClick={() => handleCharClick(c)}
+                                             className="relative rounded-[26px] p-3 pt-4 flex flex-col items-center active:scale-95 transition-transform"
+                                             style={{
+                                                 background: 'linear-gradient(160deg, rgba(255,255,255,0.17), rgba(196,176,255,0.10))',
+                                                 border: '1px solid rgba(255,255,255,0.28)',
+                                                 boxShadow: '0 10px 26px rgba(50,32,96,0.32), inset 0 1px 0 rgba(255,255,255,0.45)',
+                                                 backdropFilter: 'blur(10px)', WebkitBackdropFilter: 'blur(10px)',
+                                             }}>
+                                            {/* 在线徽标 */}
+                                            <div className="absolute top-2.5 left-2.5 flex items-center gap-1 px-1.5 py-0.5 rounded-full bg-emerald-400/20 border border-emerald-300/40 z-10">
+                                                <span className="relative flex h-1.5 w-1.5">
+                                                    <span className="absolute inline-flex h-full w-full rounded-full bg-emerald-300 opacity-70 animate-ping" />
+                                                    <span className="relative inline-flex rounded-full h-1.5 w-1.5 bg-emerald-400" />
+                                                </span>
+                                                <span className="text-[8px] font-bold text-emerald-50 tracking-wider">在线</span>
+                                            </div>
+                                            {/* 设置 / 记录（竖排） */}
+                                            <div className="absolute top-2 right-2 flex flex-col gap-1 z-20">
+                                                <button onClick={(e) => { e.stopPropagation(); openSettings(c); }} title="布置场景 / 设定立绘 / 观测"
+                                                        className="w-7 h-7 rounded-xl bg-white/85 text-violet-500 shadow-md flex items-center justify-center hover:bg-white active:scale-90 transition-all">
+                                                    <GearSix size={16} weight="fill" />
+                                                </button>
+                                                <button onClick={(e) => { e.stopPropagation(); openHistory(c); }} title="见面记录"
+                                                        className="w-7 h-7 rounded-xl bg-white/85 text-violet-500 shadow-md flex items-center justify-center hover:bg-white active:scale-90 transition-all">
+                                                    <BookOpen size={16} weight="fill" />
+                                                </button>
+                                            </div>
+                                            {/* 头像 + 光环 */}
+                                            <div className="relative mt-4 mb-2">
+                                                <div className="absolute -inset-1.5 rounded-full opacity-70" style={{ background: 'conic-gradient(from 120deg, #a78bfa, #f0abfc, #7dd3fc, #a78bfa)', filter: 'blur(6px)' }} />
+                                                <img src={c.avatar} className="relative w-[68px] h-[68px] rounded-full object-cover ring-2 ring-white/70 shadow-lg" />
+                                                {c.savedDateState && (
+                                                    <span title="有存档" className="absolute -bottom-0.5 -right-0.5 w-5 h-5 rounded-full bg-amber-400 border-2 border-white/90 flex items-center justify-center shadow">
+                                                        <Sparkle size={10} weight="fill" className="text-white" />
+                                                    </span>
+                                                )}
+                                            </div>
+                                            {/* 名字 + 花纹 */}
+                                            <div className="flex items-center gap-1.5 max-w-full">
+                                                <span className="text-violet-200/60 text-[10px]">✦</span>
+                                                <span className="font-bold text-white text-[15px] truncate drop-shadow-[0_1px_4px_rgba(80,50,140,0.5)]">{c.name}</span>
+                                                <span className="text-violet-200/60 text-[10px]">✦</span>
+                                            </div>
+                                            {/* 一句话简介 */}
+                                            {c.description && (
+                                                <div className="mt-1.5 px-2.5 py-1 rounded-full bg-white/12 border border-white/15 max-w-full">
+                                                    <span className="block text-[10px] text-violet-50/80 truncate">{c.description}</span>
+                                                </div>
+                                            )}
+                                        </div>
+                                    ))}
+                                </div>
+                            </div>
+                        ))}
+                    </div>
+                )}
+
+                {/* 页码点 */}
+                {pages.length > 1 && (
+                    <div className="relative z-10 shrink-0 flex justify-center items-center gap-2 py-3">
+                        {pages.map((_, pi) => (
+                            <button key={pi} onClick={() => goSelectPage(pi)} aria-label={`第 ${pi + 1} 页`}
+                                    className={`h-2 rounded-full transition-all ${pi === selectPage ? 'w-6 bg-white' : 'w-2 bg-white/40 hover:bg-white/60'}`} />
+                        ))}
+                    </div>
+                )}
+
                 <Modal isOpen={!!pendingSessionChar} title="发现进度" onClose={() => setPendingSessionChar(null)} footer={<div className="flex gap-3 w-full"><button onClick={handleStartNewSession} className="flex-1 py-3 bg-slate-100 rounded-2xl text-slate-600 font-bold">新的见面</button><button onClick={handleResumeSession} className="flex-1 py-3 bg-green-500 text-white rounded-2xl font-bold shadow-lg shadow-green-200">继续上次</button></div>}>
                     <div className="text-center text-slate-500 text-sm py-4">检测到 {pendingSessionChar?.name} 有未结束的见面。<br/><span className="text-xs text-slate-400 mt-2 block">(存档时间: {pendingSessionChar?.savedDateState?.timestamp ? new Date(pendingSessionChar.savedDateState.timestamp).toLocaleString() : 'Unknown'})</span></div>
                 </Modal>

@@ -2,6 +2,7 @@
 import { CharacterProfile, UserProfile, DailySchedule } from '../types';
 import { normalizeUserImpression } from './impression';
 import { getFlowNarrativeKey, isScheduleFeatureOn } from './scheduleGenerator';
+import { resolveCharTimeZone, nowInTimeZone, tzAwarenessNote, interactionGapNote } from './timezone';
 
 /**
  * Memory Central
@@ -106,6 +107,12 @@ export const ContextBuilder = {
             skipWorldbookIds?: Set<string>;
             headerOverride?: string;
         },
+        timeOptions?: {
+            /** 传入「最后一次和用户互动的时间戳」→ 统一注入「距离上次联系多久」（受 timeAwarenessEnabled 控制）。 */
+            lastInteractionTs?: number;
+            /** 抑制整段时间感知（当前时间/时差/距上次联系）。见面纯架空（dateTimeAwarenessEnabled=false）时用。 */
+            skipTimeAwareness?: boolean;
+        },
     ): string => {
         let context = `${groupOptions?.headerOverride ?? '[System: Roleplay Configuration]'}\n\n`;
 
@@ -116,6 +123,32 @@ export const ContextBuilder = {
         context += `- 用户备注/爱称 (User Note/Nickname): ${char.description || '无'}\n`;
         context += `  (注意: 这个备注是用户对你的称呼或印象，可能包含比喻。如果备注内容（如“快乐小狗”）与你的核心设定冲突，请以核心设定为准，不要真的扮演成动物，除非核心设定里写了你是动物。)\n`;
         context += `- 核心性格/指令:\n${char.systemPrompt || '你是一个温柔、拟人化的AI伴侣。'}\n\n`;
+
+        // 1a. 真实时间感知 (Time Awareness) — 跟随 timeAwarenessEnabled 设置，默认开启。
+        // 统一在 buildCoreContext 注入，让所有调用方（私聊/查手机/人际关系/通话/约会…）都知道"现在"。
+        // 自定义时区（异国恋等）：开启后这里的"当前时间"按角色所在时区折算，并附时差提示，
+        // 让查手机/人际关系/通话等所有直连 buildCoreContext 的路径都拿到正确的本地时间。
+        // skipTimeAwareness：见面纯架空时由调用方传入，彻底抑制时间注入（修「线下时间感知」关掉后仍漏时间）。
+        if (char.timeAwarenessEnabled !== false && !timeOptions?.skipTimeAwareness) {
+            const charTz = resolveCharTimeZone(char);
+            const now = nowInTimeZone(charTz);
+            const h = now.getHours();
+            const dayNames = ['周日', '周一', '周二', '周三', '周四', '周五', '周六'];
+            const timeOfDay =
+                h < 5 ? '凌晨' : h < 9 ? '早晨' : h < 12 ? '上午' : h < 14 ? '中午'
+                : h < 17 ? '下午' : h < 19 ? '傍晚' : h < 22 ? '晚上' : '深夜';
+            const dateStr = `${now.getFullYear()}年${now.getMonth() + 1}月${now.getDate()}日`;
+            const timeStr = `${h.toString().padStart(2, '0')}:${now.getMinutes().toString().padStart(2, '0')}`;
+            context += `### 当前时间 (Now)\n`;
+            context += `现在是 ${dateStr} ${dayNames[now.getDay()]} ${timeOfDay} ${timeStr}。请据此自然地拥有真实的时间观念（早晚作息、工作日/周末、距离上次互动多久等），不要凭空假设时间。\n`;
+            const tzNote = tzAwarenessNote(charTz);
+            if (tzNote) context += `${tzNote.trim()}\n`;
+            // 距离上次联系多久（统一口径）：传了 lastInteractionTs 才注入。
+            // 让查手机/人际关系等无内联消息流的路径，也像聊天一样知道「用户多久没联系我了」。
+            const gapNote = interactionGapNote(timeOptions?.lastInteractionTs);
+            if (gapNote) context += gapNote;
+            context += `\n`;
+        }
 
         // 1b. 自我领悟词条 (Self Insights) — 消化过程中反刍产生的常驻自我认知
         // 像情绪底色一样影响角色的行为和感受，注入在角色设定紧下方

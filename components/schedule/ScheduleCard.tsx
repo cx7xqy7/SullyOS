@@ -11,6 +11,7 @@ interface ScheduleCardProps {
     onDelete?: (index: number) => void;
     onReroll?: () => void;
     onCoverImageChange?: (dataUrl: string) => void;
+    onPlayTheater?: (index: number) => void; // 点某个「已过去/正在进行」时段的播放按钮 → 小剧场
     isGenerating?: boolean;
 }
 
@@ -41,6 +42,7 @@ const ScheduleCard: React.FC<ScheduleCardProps> = ({
     onDelete,
     onReroll,
     onCoverImageChange,
+    onPlayTheater,
     isGenerating = false,
 }) => {
     const [editingIdx, setEditingIdx] = useState<number | null>(null);
@@ -311,6 +313,26 @@ const ScheduleCard: React.FC<ScheduleCardProps> = ({
                                             <p className="text-[11px] opacity-50 mt-0.5 leading-tight">{slot.description}</p>
                                         )}
                                     </div>
+
+                                    {/* 小剧场播放按钮：只对「已过去 / 正在进行」的时段亮起（窥视已发生的行为） */}
+                                    {!compact && onPlayTheater && (isPast || isCurrent) && (
+                                        <button
+                                            className="flex-shrink-0 mt-0.5 w-7 h-7 rounded-full flex items-center justify-center text-xs transition-all active:scale-90"
+                                            style={{
+                                                background: slot.theater ? accentHsl : 'rgba(255,255,255,0.12)',
+                                                color: slot.theater ? cardBg : contentColor,
+                                            }}
+                                            title={slot.theater ? '重看小剧场' : '窥视这一刻'}
+                                            onPointerDown={(e) => { e.stopPropagation(); cancelLongPress(); }}
+                                            onClick={(e) => {
+                                                e.stopPropagation();
+                                                longPressTriggeredRef.current = false;
+                                                onPlayTheater(idx);
+                                            }}
+                                        >
+                                            {slot.theater ? '↻' : '▶'}
+                                        </button>
+                                    )}
                                 </div>
                             );
                         })

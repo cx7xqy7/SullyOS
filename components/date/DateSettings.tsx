@@ -4,6 +4,7 @@ import { useOS } from '../../context/OSContext';
 import { CharacterProfile, SpriteConfig, SkinSet, DateStyleConfig } from '../../types';
 import { processImage } from '../../utils/file';
 import { DATE_STYLE_PRESETS } from '../../utils/datePrompts';
+import ObserveSettings from './ObserveSettings';
 
 // 标准情绪列表
 const REQUIRED_EMOTIONS = ['normal', 'happy', 'angry', 'sad', 'shy'];
@@ -13,6 +14,17 @@ interface DateSettingsProps {
     char: CharacterProfile;
     onBack: () => void;
 }
+
+/** 可折叠分区卡片：标题常驻，内容默认收起，点标题展开。用原生 <details> 省状态。 */
+const Section: React.FC<{ title: string; defaultOpen?: boolean; children: React.ReactNode }> = ({ title, defaultOpen, children }) => (
+    <details open={defaultOpen} className="group bg-white rounded-2xl border border-slate-100 shadow-sm overflow-hidden">
+        <summary className="list-none cursor-pointer select-none flex items-center justify-between gap-2 px-4 py-3.5 active:bg-slate-50 [&::-webkit-details-marker]:hidden">
+            <h3 className="text-xs font-bold text-slate-400 uppercase">{title}</h3>
+            <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor" className="w-3.5 h-3.5 text-slate-300 transition-transform group-open:rotate-180 shrink-0"><path fillRule="evenodd" d="M5.23 7.21a.75.75 0 0 1 1.06.02L10 11.168l3.71-3.938a.75.75 0 1 1 1.08 1.04l-4.25 4.5a.75.75 0 0 1-1.08 0l-4.25-4.5a.75.75 0 0 1 .02-1.06Z" clipRule="evenodd" /></svg>
+        </summary>
+        <div className="px-4 pb-4 pt-1">{children}</div>
+    </details>
+);
 
 const DateSettings: React.FC<DateSettingsProps> = ({ char, onBack }) => {
     const { updateCharacter, addToast, userProfile } = useOS();
@@ -227,8 +239,7 @@ const DateSettings: React.FC<DateSettingsProps> = ({ char, onBack }) => {
             </div>
 
             <div className="flex-1 overflow-y-auto p-5 space-y-8 pb-20">
-                <section className="bg-white p-4 rounded-2xl border border-slate-100 shadow-sm">
-                    <h3 className="text-xs font-bold text-slate-400 uppercase mb-4">立绘位置调整</h3>
+                <Section title="立绘位置调整">
                     <div className="space-y-6">
                         <div>
                             <div className="flex justify-between text-[10px] text-slate-500 mb-2"><span>大小缩放 (Scale)</span><span>{tempSpriteConfig.scale.toFixed(1)}x</span></div>
@@ -243,7 +254,7 @@ const DateSettings: React.FC<DateSettingsProps> = ({ char, onBack }) => {
                             <input type="range" min="-50" max="50" step="5" value={tempSpriteConfig.y} onChange={e => setTempSpriteConfig({...tempSpriteConfig, y: parseInt(e.target.value)})} className="w-full h-1.5 bg-slate-200 rounded-lg appearance-none cursor-pointer accent-primary" />
                         </div>
                     </div>
-                </section>
+                </Section>
 
                 <section className="bg-white p-4 rounded-2xl border border-slate-100 shadow-sm">
                     <div className="flex items-center justify-between">
@@ -260,8 +271,9 @@ const DateSettings: React.FC<DateSettingsProps> = ({ char, onBack }) => {
                     </div>
                 </section>
 
-                <section className="bg-white p-4 rounded-2xl border border-slate-100 shadow-sm">
-                    <h3 className="text-xs font-bold text-slate-400 uppercase">文风与叙事 (Writing Style)</h3>
+                <ObserveSettings char={char} />
+
+                <Section title="文风与叙事 (Writing Style)">
                     <p className="text-[11px] text-slate-400 mt-1 mb-4">调整见面时 AI 的写作风格与叙事人称，修改后从下一条回复开始生效。</p>
 
                     {/* 写作风格 */}
@@ -332,10 +344,9 @@ const DateSettings: React.FC<DateSettingsProps> = ({ char, onBack }) => {
                         />
                         <p className="text-[10px] text-slate-300 mt-1">失焦自动保存，会原样追加进提示词，优先级高于风格预设。</p>
                     </div>
-                </section>
+                </Section>
 
-                <section>
-                    <h3 className="text-xs font-bold text-slate-400 uppercase mb-3">背景 (Background)</h3>
+                <Section title="背景 (Background)">
                     <div 
                         onClick={() => triggerUpload('bg')}
                         className="aspect-video bg-slate-200 rounded-xl overflow-hidden relative border-2 border-dashed border-slate-300 flex items-center justify-center cursor-pointer hover:border-primary group"
@@ -347,10 +358,9 @@ const DateSettings: React.FC<DateSettingsProps> = ({ char, onBack }) => {
                             </>
                         ) : <span className="text-slate-400 text-xs">+ 上传背景图</span>}
                     </div>
-                </section>
+                </Section>
                 
-                <section>
-                    <h3 className="text-xs font-bold text-slate-400 uppercase mb-3">基础情绪立绘</h3>
+                <Section title="基础情绪立绘">
                     <div className="grid grid-cols-3 gap-3">
                         {REQUIRED_EMOTIONS.map(key => (
                             <div key={key} onClick={() => triggerUpload('sprite', key)} className="flex flex-col gap-2 group cursor-pointer">
@@ -368,10 +378,9 @@ const DateSettings: React.FC<DateSettingsProps> = ({ char, onBack }) => {
                             </div>
                         ))}
                     </div>
-                </section>
+                </Section>
 
-                <section>
-                    <h3 className="text-xs font-bold text-slate-400 uppercase mb-3">自定义情绪 (Custom Emotions)</h3>
+                <Section title="自定义情绪 (Custom Emotions)">
                     <p className="text-[11px] text-slate-400 mb-4">为该角色添加专属情绪，AI 会在见面时使用。每个角色的自定义情绪互相独立。</p>
 
                     {/* Existing custom emotions grid */}
@@ -422,13 +431,10 @@ const DateSettings: React.FC<DateSettingsProps> = ({ char, onBack }) => {
                             添加
                         </button>
                     </div>
-                </section>
+                </Section>
 
                 {/* URL Upload for Default Sprites */}
-                <section className="bg-white p-4 rounded-2xl border border-slate-100 shadow-sm">
-                    <div className="flex items-center justify-between mb-2">
-                        <h3 className="text-xs font-bold text-slate-400 uppercase">图床 URL 上传</h3>
-                    </div>
+                <Section title="图床 URL 上传">
                     <p className="text-[11px] text-slate-400 mb-3">直接粘贴图片 URL 作为默认立绘</p>
                     <button
                         onClick={() => { setUrlTargetSkinId(null); setShowUrlModal(true); }}
@@ -436,11 +442,10 @@ const DateSettings: React.FC<DateSettingsProps> = ({ char, onBack }) => {
                     >
                         + 通过 URL 添加立绘
                     </button>
-                </section>
+                </Section>
 
                 {/* Skin Sets System */}
-                <section>
-                    <h3 className="text-xs font-bold text-slate-400 uppercase mb-3">皮肤系统 (Skin Sets)</h3>
+                <Section title="皮肤系统 (Skin Sets)">
                     <p className="text-[11px] text-slate-400 mb-4">为角色创建多套立绘皮肤。切换皮肤后，AI 将使用对应皮肤的表情立绘。</p>
 
                     {/* Active skin indicator */}
@@ -523,7 +528,7 @@ const DateSettings: React.FC<DateSettingsProps> = ({ char, onBack }) => {
                             创建
                         </button>
                     </div>
-                </section>
+                </Section>
 
                 <input type="file" ref={fileInputRef} className="hidden" accept="image/*" onChange={handleFileUpload} />
             </div>

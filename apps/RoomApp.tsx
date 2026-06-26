@@ -9,10 +9,12 @@ import { injectMemoryPalace } from '../utils/memoryPalace/pipeline';
 import { processImage } from '../utils/file';
 import Modal from '../components/os/Modal';
 import { safeResponseJson } from '../utils/safeApi';
-import { Door, Sparkle, Image, GearSix, Camera } from '@phosphor-icons/react';
+import { Door, Sparkle, Image, GearSix, Camera, MoonStars } from '@phosphor-icons/react';
 import { FURNITURE_ICONS } from '../utils/furnitureIcons';
 import PixelHomeView from './pixelHome/PixelHomeView';
 import WorldHomeApp from './WorldHomeApp';
+import DreamTheater from './DreamTheater';
+import { useDreamSim, dreamSimStore } from '../utils/dreamSimStore';
 
 const TWEMOJI_BASE = 'https://cdnjs.cloudflare.com/ajax/libs/twemoji/14.0.2/72x72';
 const twemojiUrl = (codepoint: string) => `${TWEMOJI_BASE}/${codepoint}.png`;
@@ -283,6 +285,7 @@ const RoomApp: React.FC = () => {
     const [showRefreshConfirm, setShowRefreshConfirm] = useState(false);
     const [showDevModal, setShowDevModal] = useState(false); // Developer Mode
     const [showSettingsModal, setShowSettingsModal] = useState(false); // New: Room Settings
+    const [showDream, setShowDream] = useState(false); // 查看梦境 · Dream Theater overlay
     const [lastPrompt, setLastPrompt] = useState<string>(''); // Debug: Store last sent prompt
     
     // Actor & Room State
@@ -432,7 +435,17 @@ const RoomApp: React.FC = () => {
 
             addToast('已恢复今日房间状态', 'info');
         } else {
-            initializeRoomState(c, loadedItems || []);
+            // 不在进门时阻塞生成——直接进屋（否则用户要干等很久才进得来）。
+            // 今天的房间内容交给用户进屋后点「更新这一天」再生成；
+            // 这里只把聊天期间可能已生成的 todo / 随笔 / 日程读出来填上。
+            const existingTodo = await DB.getRoomTodo(c.id, today);
+            const existingNotes = await DB.getRoomNotes(c.id);
+            const existingSchedule = await DB.getDailySchedule(c.id, today);
+            setTodaysTodo(existingTodo);
+            setNotebookEntries(existingNotes.sort((a, b) => b.timestamp - a.timestamp));
+            setRoomSchedule(existingSchedule);
+            setRoomDescriptions({});
+            setAiBubble({ text: '', visible: false });
         }
     };
 
@@ -442,6 +455,25 @@ const RoomApp: React.FC = () => {
             initializeRoomState(char, items, true);
         }
     };
+
+    // 「更新这一天」：进屋后由用户主动触发今日房间生成（首次生成无需二次确认）
+    const handleGenerateToday = () => {
+        if (char) initializeRoomState(char, items, true);
+    };
+
+    // 梦境全局指示条深链：点一下 → 直接进入对应角色的房间并打开梦境演出
+    const dreamSim = useDreamSim();
+    const dreamSimCharId = dreamSim.status === 'idle' ? undefined : dreamSim.charId;
+    useEffect(() => {
+        if (!dreamSim.deepLink || !dreamSimCharId) return;
+        const c = characters.find(x => x.id === dreamSimCharId);
+        if (c) {
+            setHomeTab('room');
+            handleEnterRoom(c);   // 设激活角色 + 进房间 + 载入家具（不阻塞生成）
+            setShowDream(true);
+        }
+        dreamSimStore.clearDeepLink();
+    }, [dreamSim.deepLink, dreamSimCharId, characters]);
 
     // Fallback Initialization: Used when main generation fails due to Safety Block
     const initializeFallback = async (c: CharacterProfile) => {
@@ -1251,18 +1283,21 @@ ${!shouldGenerateTodo ? `(系统: 今日待办已存在，无需生成，请忽�
     // Sully Check
     const isSully = char?.id === 'preset-sully-v2' || char?.name === 'Sully';
 
+    // 今天的房间是否已生成（lastRoomDate 命中今日即视为已生成）——决定是否提示「更新这一天」
+    const todayGenerated = !!char && char.lastRoomDate === getVirtualDay();
+
     return (
         <div className="h-full w-full bg-[#f8fafc] flex flex-col relative overflow-hidden font-sans select-none">
-            
-            {/* 进门一次性把整个房间生成出来（按次计费，所以一趟读完，进去就能一口气逛完）。
-                慢是必然的，这里用小字向用户解释清楚为什么。 */}
+
+            {/* 「更新这一天」时一趟把整个房间生成出来（按次计费，所以一趟读完，之后逛屋不再等待）。
+                慢是必然的，这里用小字向用户解释清楚为什么。进门本身不再触发它。 */}
             {isInitializing && (
                 <div className="absolute inset-0 z-[500] bg-white flex flex-col items-center justify-center animate-fade-in px-10 text-center">
                     <div className="text-4xl mb-4 animate-bounce"><Door size={48} className="text-slate-400" /></div>
                     <p className="text-sm font-bold text-slate-500">{initStatusText}</p>
                     <p className="text-[11px] text-slate-400/90 leading-[1.7] mt-3 max-w-[268px]">
                         正在一趟把整个房间「读」出来——ta 此刻的状态、屋里<b className="text-slate-500">每一件物品</b>的样子和 ta 的反应、今天的计划与随笔，都在这一次里生成。
-                        <br />物件越多越久，但只生成这一次，进去就能一口气全看完，之后点哪件都不再等待。
+                        <br />物件越多越久，但只生成这一次，生成后就能一口气全看完，之后点哪件都不再等待。
                     </p>
                 </div>
             )}
@@ -1304,6 +1339,19 @@ ${!shouldGenerateTodo ? `(系统: 今日待办已存在，无需生成，请忽�
                     {aiBubble.visible && <div className="absolute bottom-[105%] left-1/2 -translate-x-1/2 bg-white px-4 py-3 rounded-[20px] rounded-bl-none shadow-lg border-2 border-black/5 min-w-[120px] max-w-[300px] animate-pop-in z-50"><p className="text-xs font-bold text-slate-700 leading-tight text-center break-words">{aiBubble.text}</p><button onClick={(e) => { e.stopPropagation(); setAiBubble({ ...aiBubble, visible: false }); }} className="absolute -top-2 -right-2 bg-slate-200 text-slate-500 rounded-full w-4 h-4 flex items-center justify-center text-[8px]">×</button></div>}
                 </div>
             </div>
+
+            {/* 查看梦境入口 · 左中边缘的「月亮」按钮（只在浏览模式露出，与右侧「生活碎片」对称） */}
+            {mode === 'view' && (
+                <button onClick={() => setShowDream(true)} title="查看梦境"
+                    className="absolute left-0 top-1/2 -translate-y-1/2 flex flex-col items-center gap-1 px-2.5 py-3 rounded-r-2xl shadow-lg border border-l-0 z-[300] active:scale-95 transition-transform"
+                    style={{ background: 'linear-gradient(135deg, #2a2440, #1a1730)', borderColor: 'rgba(205,214,255,0.25)' }}>
+                    <MoonStars size={20} weight="fill" style={{ color: '#cdd6ff' }} />
+                    <span className="text-[8px] font-bold tracking-wider text-[#cdd6ff]/80 [writing-mode:vertical-rl]">梦境</span>
+                </button>
+            )}
+
+            {/* 梦境演出 · 全屏覆盖（角色不记得梦，但用户偷看到了） */}
+            {showDream && char && <DreamTheater char={char} onExit={() => setShowDream(false)} />}
 
             {/* Sidebar Toggle Button */}
             <button onClick={() => setShowSidebar(true)} className={`absolute right-0 top-1/2 -translate-y-1/2 bg-white/90 p-3 rounded-l-2xl shadow-lg border border-r-0 border-slate-200 transition-transform duration-300 z-[300] ${showSidebar ? 'translate-x-full' : 'translate-x-0'}`}>
@@ -1380,8 +1428,8 @@ ${!shouldGenerateTodo ? `(系统: 今日待办已存在，无需生成，请忽�
             <div className="absolute top-0 w-full px-4 pb-2 flex justify-between z-30 pointer-events-none" style={{ paddingTop: 'max(3rem, var(--safe-top))' }}>
                 <button onClick={() => setViewState('select')} className="bg-white/90 p-2 rounded-full shadow-md pointer-events-auto active:scale-90 transition-transform text-slate-600"><svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth={2} stroke="currentColor" className="w-6 h-6"><path strokeLinecap="round" strokeLinejoin="round" d="M15.75 19.5 8.25 12l7.5-7.5" /></svg></button>
                 <div className="flex gap-2 pointer-events-auto">
-                    {/* REFRESH BUTTON */}
-                    {mode === 'view' && (
+                    {/* REFRESH BUTTON — 仅在今天已生成时露出（未生成时走下方「更新这一天」横幅） */}
+                    {mode === 'view' && todayGenerated && (
                         <button onClick={() => setShowRefreshConfirm(true)} className="p-2 bg-white/90 rounded-full shadow-md text-slate-500 hover:text-primary active:scale-90 transition-transform" title="强制刷新今日">
                             <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth={2} stroke="currentColor" className="w-6 h-6"><path strokeLinecap="round" strokeLinejoin="round" d="M16.023 9.348h4.992v-.001M2.985 19.644v-4.992m0 0h4.992m-4.993 0 3.181 3.183a8.25 8.25 0 0 0 13.803-3.7M4.031 9.865a8.25 8.25 0 0 1 13.803-3.7l3.181 3.182m0-4.991v4.99" /></svg>
                         </button>
@@ -1392,6 +1440,22 @@ ${!shouldGenerateTodo ? `(系统: 今日待办已存在，无需生成，请忽�
 
             {/* Observation Card (Bottom) */}
             {observationText && mode === 'view' && <div className="absolute bottom-6 left-4 right-4 bg-white p-5 rounded-2xl shadow-2xl border border-slate-100 z-[150] animate-slide-up"><div className="flex justify-between items-start mb-2"><span className="text-xs font-bold text-blue-500 uppercase tracking-widest">OBSERVATION</span><button onClick={() => setObservationText('')} className="text-slate-400 hover:text-slate-600">×</button></div><p className="text-sm text-slate-700 leading-relaxed font-medium text-justify">{observationText}</p></div>}
+
+            {/* 「更新这一天」横幅 —— 今天尚未生成时露出（进门不再阻塞，由用户主动触发） */}
+            {mode === 'view' && !todayGenerated && !isInitializing && !observationText && (
+                <div className="absolute bottom-6 left-4 right-4 bg-white p-4 rounded-2xl shadow-2xl border border-slate-100 z-[150] animate-slide-up flex items-center gap-3">
+                    <div className="w-10 h-10 rounded-xl bg-primary-light flex items-center justify-center shrink-0">
+                        <Door size={22} className="text-primary" />
+                    </div>
+                    <div className="flex-1 min-w-0">
+                        <p className="text-sm font-bold text-slate-700 leading-tight">今天还没走进 {char?.name} 的一天</p>
+                        <p className="text-[11px] text-slate-400 leading-snug mt-0.5">物品反应、今日计划与随笔会在这一次里生成，需要一点时间。</p>
+                    </div>
+                    <button onClick={handleGenerateToday} className="shrink-0 px-4 py-2.5 rounded-xl bg-primary text-white text-xs font-bold shadow-md active:scale-95 transition-transform">
+                        更新这一天
+                    </button>
+                </div>
+            )}
 
             {/* Edit Mode Toolbar - Collapsible */}
             {mode === 'edit' && (

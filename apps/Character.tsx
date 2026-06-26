@@ -19,6 +19,7 @@ import { fetchMiniMaxVoices, MiniMaxVoiceItem } from '../utils/minimaxVoice';
 import { resolveMiniMaxApiKey } from '../utils/minimaxApiKey';
 import { normalizeUserImpression } from '../utils/impression';
 import { injectMemoryPalace } from '../utils/memoryPalace/pipeline';
+import { COMMON_TIMEZONES } from '../utils/timezone';
 
 const CharacterCard: React.FC<{
     char: CharacterProfile;
@@ -1092,12 +1093,80 @@ ${isInitialGeneration ? `
 
                            <div>
                                <label className="text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-1.5 block">世界观 / 设定补充 (Worldview & Lore)</label>
-                               <textarea 
-                                    value={formData.worldview || ''} 
-                                    onChange={(e) => handleChange('worldview', e.target.value)} 
+                               <textarea
+                                    value={formData.worldview || ''}
+                                    onChange={(e) => handleChange('worldview', e.target.value)}
                                     className="w-full h-24 bg-white rounded-3xl p-5 text-sm shadow-sm resize-none focus:ring-1 focus:ring-primary/20 transition-all vr-reader-scroll"
                                     placeholder="在这个世界里，魔法是存在的..."
                                 />
+                           </div>
+
+                           {/* 时间感知 & 时区：三个独立开关，可任意组合（聊天时间感知 / 自定义时区 / 线下时间感知） */}
+                           <div className="bg-white rounded-3xl p-4 shadow-sm border border-slate-100 space-y-4">
+                               <div>
+                                   <label className="text-[10px] font-bold text-indigo-500 uppercase tracking-widest block">时间感知 & 时区</label>
+                                   <p className="text-[11px] text-slate-400 mt-1 leading-relaxed">下面三个开关相互独立、可任意组合。改完即时生效（下一条回复起算）。</p>
+                               </div>
+
+                               {/* 1. 聊天 · 时间感知强化 */}
+                               <div className="border-t border-slate-100 pt-3">
+                                   <div className="flex items-center justify-between gap-3">
+                                       <div className="min-w-0">
+                                           <p className="text-xs font-bold text-slate-700">聊天 · 时间感知强化</p>
+                                           <p className="text-[10px] text-slate-400 mt-0.5 leading-relaxed">默认开。向聊天注入「距离上次多久」提示，强化时间观念、主动匹配现实时间。关掉后弱化程度看模型自身理解。</p>
+                                       </div>
+                                       <button
+                                           onClick={() => handleChange('timeAwarenessEnabled', formData.timeAwarenessEnabled === false)}
+                                           className={`w-12 h-7 rounded-full transition-colors relative shrink-0 ${formData.timeAwarenessEnabled !== false ? 'bg-primary' : 'bg-slate-200'}`}
+                                       >
+                                           <div className={`absolute top-0.5 w-6 h-6 bg-white rounded-full shadow-md transition-transform ${formData.timeAwarenessEnabled !== false ? 'translate-x-5' : 'translate-x-0.5'}`}></div>
+                                       </button>
+                                   </div>
+                               </div>
+
+                               {/* 2. 自定义时区（异国恋等） */}
+                               <div className="border-t border-slate-100 pt-3">
+                                   <div className="flex items-center justify-between gap-3">
+                                       <div className="min-w-0">
+                                           <p className="text-xs font-bold text-slate-700">自定义时区</p>
+                                           <p className="text-[10px] text-slate-400 mt-0.5 leading-relaxed">默认关（跟随本机）。开启后角色活在自己的时区里，「当前时间 / 消息时间戳 / 深夜判断」都按所选时区折算，并知道与你有时差——适合异国恋、角色身处异国。</p>
+                                       </div>
+                                       <button
+                                           onClick={() => handleChange('customTimezoneEnabled', !formData.customTimezoneEnabled)}
+                                           className={`w-12 h-7 rounded-full transition-colors relative shrink-0 ${formData.customTimezoneEnabled ? 'bg-primary' : 'bg-slate-200'}`}
+                                       >
+                                           <div className={`absolute top-0.5 w-6 h-6 bg-white rounded-full shadow-md transition-transform ${formData.customTimezoneEnabled ? 'translate-x-5' : 'translate-x-0.5'}`}></div>
+                                       </button>
+                                   </div>
+                                   {formData.customTimezoneEnabled && (
+                                       <select
+                                           value={formData.customTimezone || ''}
+                                           onChange={(e) => handleChange('customTimezone', e.target.value)}
+                                           className="mt-3 w-full bg-slate-50 rounded-2xl px-3 py-2.5 text-xs border border-slate-200 outline-none focus:ring-1 focus:ring-primary/30"
+                                       >
+                                           <option value="">请选择角色所在时区…</option>
+                                           {COMMON_TIMEZONES.map(tz => (
+                                               <option key={tz.id} value={tz.id}>{tz.label}</option>
+                                           ))}
+                                       </select>
+                                   )}
+                               </div>
+
+                               {/* 3. 线下时间感知（约会 / 见面 App） */}
+                               <div className="border-t border-slate-100 pt-3">
+                                   <div className="flex items-center justify-between gap-3">
+                                       <div className="min-w-0">
+                                           <p className="text-xs font-bold text-slate-700">线下时间感知（约会）</p>
+                                           <p className="text-[10px] text-slate-400 mt-0.5 leading-relaxed">默认开。见面时向剧本注入「当前真实时间」，让线下剧情跟着现实时间走。关掉后剧情脱离现实时间线，更适合纯架空。</p>
+                                       </div>
+                                       <button
+                                           onClick={() => handleChange('dateTimeAwarenessEnabled', formData.dateTimeAwarenessEnabled === false ? undefined : false)}
+                                           className={`w-12 h-7 rounded-full transition-colors relative shrink-0 ${formData.dateTimeAwarenessEnabled !== false ? 'bg-primary' : 'bg-slate-200'}`}
+                                       >
+                                           <div className={`absolute top-0.5 w-6 h-6 bg-white rounded-full shadow-md transition-transform ${formData.dateTimeAwarenessEnabled !== false ? 'translate-x-5' : 'translate-x-0.5'}`}></div>
+                                       </button>
+                                   </div>
+                               </div>
                            </div>
 
                            <div className="bg-white rounded-3xl p-4 shadow-sm border border-slate-100 space-y-3">

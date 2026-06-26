@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { DatePrompts, DATE_STYLE_PRESETS } from './datePrompts';
+import { DatePrompts, DATE_STYLE_PRESETS, extractObservation, stripObservation, hasObservation, resolveObserveFields, OBSERVE_OPEN, OBSERVE_CLOSE } from './datePrompts';
 import type { CharacterProfile, UserProfile, Message } from '../types';
 
 const makeChar = (overrides: Partial<CharacterProfile> = {}): CharacterProfile => ({
@@ -103,6 +103,222 @@ describe('DatePrompts.buildSessionPayload', () => {
         const reroll = await DatePrompts.buildSessionPayload({ ...baseInput(makeChar()), variant: 'reroll' });
         const lastReroll = reroll.messages[reroll.messages.length - 1];
         expect(lastReroll.content).toContain('Reroll');
+    });
+});
+
+describe('OBSERVE 观测协议', () => {
+    const block = `${OBSERVE_OPEN}
+时间｜傍晚六点过，天刚擦黑
+地点｜便利店门口的塑料凳上
+状态｜有点疲惫，但见到你眼神亮了一下
+细节｜指尖无意识地敲着关东煮的纸杯
+${OBSERVE_CLOSE}`;
+
+    it('开关打开时注入观测块提示词，关闭时不注入', async () => {
+        const on = await DatePrompts.buildSessionPayload({
+            char: makeChar({ dateObserve: { enabled: true } }),
+            userProfile: user, allMsgs: [makeMsg({ role: 'assistant', content: '[normal] 开场' }), makeMsg({ content: 'hi' })],
+            emojis: [], userText: 'hi', variant: 'send',
+        });
+        expect(sysOf(on.messages)).toContain('观测协议');
+        expect(sysOf(on.messages)).toContain(OBSERVE_OPEN);
+
+        const off = await DatePrompts.buildSessionPayload({
+            char: makeChar(),
+            userProfile: user, allMsgs: [makeMsg({ role: 'assistant', content: '[normal] 开场' }), makeMsg({ content: 'hi' })],
+            emojis: [], userText: 'hi', variant: 'send',
+        });
+        expect(sysOf(off.messages)).not.toContain('观测协议');
+    });
+
+    it('自定义维度：hint 注入提示词，label 只改 HUD（线格式仍用固定中文 key）', async () => {
+        const { messages } = await DatePrompts.buildSessionPayload({
+            char: makeChar({ dateObserve: {
+                enabled: true,
+                fields: { state: { label: '心情指数', hint: '用一个温度词概括此刻心情' } },
+            } }),
+            userProfile: user, allMsgs: [makeMsg({ role: 'assistant', content: '[normal] 开场' }), makeMsg({ content: 'hi' })],
+            emojis: [], userText: 'hi', variant: 'send',
+        });
+        const sys = sysOf(messages);
+        expect(sys).toContain('用一个温度词概括此刻心情'); // 自定义 hint 进了提示词
+        expect(sys).toContain('状态｜');                    // 线格式字段名仍是固定的「状态」
+        expect(sys).not.toContain('心情指数｜');            // 自定义 label 不进线格式（避免解析失配）
+    });
+
+    it('禁用某维度后，提示词里不再出现该字段', async () => {
+        const { messages } = await DatePrompts.buildSessionPayload({
+            char: makeChar({ dateObserve: { enabled: true, fields: { detail: { enabled: false } } } }),
+            userProfile: user, allMsgs: [makeMsg({ role: 'assistant', content: '[normal] 开场' }), makeMsg({ content: 'hi' })],
+            emojis: [], userText: 'hi', variant: 'send',
+        });
+        const sys = sysOf(messages);
+        expect(sys).toContain('观测协议');
+        expect(sys).toContain('时间｜');
+        expect(sys).not.toContain('细节｜');
+    });
+
+    it('四个维度全部禁用时不注入观测块', async () => {
+        const { messages } = await DatePrompts.buildSessionPayload({
+            char: makeChar({ dateObserve: { enabled: true, fields: {
+                time: { enabled: false }, place: { enabled: false }, state: { enabled: false }, detail: { enabled: false },
+            } } }),
+            userProfile: user, allMsgs: [makeMsg({ role: 'assistant', content: '[normal] 开场' }), makeMsg({ content: 'hi' })],
+            emojis: [], userText: 'hi', variant: 'send',
+        });
+        expect(sysOf(messages)).not.toContain('观测协议');
+    });
+
+    it('resolveObserveFields 合并默认+自定义并过滤禁用', () => {
+        const char = makeChar({ name: '阿狸', dateObserve: { enabled: true, fields: {
+            place: { label: '坐标' }, detail: { enabled: false },
+        } } });
+        const fields = resolveObserveFields(char.dateObserve, char.name);
+        expect(fields.map(f => f.key)).toEqual(['time', 'place', 'state']); // detail 被过滤
+        expect(fields.find(f => f.key === 'place')!.display).toBe('坐标');   // 自定义展示标签
+        expect(fields.find(f => f.key === 'place')!.label).toBe('地点');     // 线格式字段名不变
+        expect(fields.find(f => f.key === 'place')!.hint).toContain('阿狸'); // {name} 已替换
+    });
+
+    it('追加自定义维度：hint 进提示词、label 进线格式与硬性要求', async () => {
+        const { messages } = await DatePrompts.buildSessionPayload({
+            char: makeChar({ dateObserve: {
+                enabled: true,
+                custom: [{ id: 'c1', label: '穿着', hint: '今天穿了什么、整不整齐', enabled: true }],
+            } }),
+            userProfile: user, allMsgs: [makeMsg({ role: 'assistant', content: '[normal] 开场' }), makeMsg({ content: 'hi' })],
+            emojis: [], userText: 'hi', variant: 'send',
+        });
+        const sys = sysOf(messages);
+        expect(sys).toContain('穿着｜');
+        expect(sys).toContain('今天穿了什么、整不整齐');
+        expect(sys).toContain('「穿着」'); // 出现在「标签必须原样用」清单里
+    });
+
+    it('extractObservation 解析自定义维度到 extra（需传 custom）', () => {
+        const fields = [{ id: 'c1', label: '穿着', enabled: true }];
+        const full = `${OBSERVE_OPEN}\n时间｜黄昏\n地点｜天台\n穿着｜松垮的灰色卫衣\n${OBSERVE_CLOSE}\n[normal] 嗨。`;
+        const { observation, rest } = extractObservation(full, { custom: fields });
+        expect(observation!.time).toBe('黄昏');
+        expect(observation!.extra?.c1).toBe('松垮的灰色卫衣');
+        expect(rest).toBe('[normal] 嗨。');
+        // 不传 custom 时，自定义行不会被解析成字段（留在 rest 或被忽略）
+        const noCustom = extractObservation(full);
+        expect(noCustom.observation!.extra?.c1).toBeUndefined();
+    });
+
+    it('回退层也能吃自定义维度（凑够 2 个维度）', () => {
+        const fields = [{ id: 'c1', label: '天气', enabled: true }];
+        const t = `天气｜下着小雨\n状态｜缩着脖子\n[normal] 快进来。`;
+        const { observation, rest } = extractObservation(t, { lenient: true, custom: fields });
+        expect(observation!.extra?.c1).toBe('下着小雨');
+        expect(observation!.state).toBe('缩着脖子');
+        expect(rest).toBe('[normal] 快进来。');
+    });
+
+    it('禁用 / 空标签的自定义维度不参与注入与解析', async () => {
+        const char = makeChar({ dateObserve: { enabled: true, custom: [
+            { id: 'c1', label: '穿着', enabled: false },
+            { id: 'c2', label: '', enabled: true },
+        ] } });
+        const { messages } = await DatePrompts.buildSessionPayload({
+            char, userProfile: user, allMsgs: [makeMsg({ role: 'assistant', content: '[normal] 开场' }), makeMsg({ content: 'hi' })],
+            emojis: [], userText: 'hi', variant: 'send',
+        });
+        expect(sysOf(messages)).not.toContain('穿着｜');
+        expect(resolveObserveFields(char.dateObserve, char.name).filter(f => f.isCustom)).toHaveLength(0);
+    });
+
+    it('extractObservation 解析四字段并剥出正文', () => {
+        const full = `${block}\n[normal] 抬眼看你。\n[happy] "你来啦。"`;
+        const { observation, rest } = extractObservation(full);
+        expect(observation).not.toBeNull();
+        expect(observation!.time).toContain('傍晚六点');
+        expect(observation!.place).toContain('便利店');
+        expect(observation!.state).toContain('疲惫');
+        expect(observation!.detail).toContain('纸杯');
+        expect(rest).toContain('[normal] 抬眼看你。');
+        expect(rest).not.toContain(OBSERVE_OPEN);
+        expect(rest).not.toContain('时间｜');
+    });
+
+    it('解析对半角竖线/英文 key/冒号容错', () => {
+        const alt = `${OBSERVE_OPEN}\nTIME: dusk\nplace | a rooftop\n状态：calm\nDETAIL：a slow breath\n${OBSERVE_CLOSE}`;
+        const { observation } = extractObservation(alt);
+        expect(observation!.time).toBe('dusk');
+        expect(observation!.place).toBe('a rooftop');
+        expect(observation!.state).toBe('calm');
+        expect(observation!.detail).toBe('a slow breath');
+    });
+
+    it('没有观测块时原样返回，observation 为 null', () => {
+        const plain = '[normal] 普通的一行。\n[happy] "嗨。"';
+        const { observation, rest } = extractObservation(plain);
+        expect(observation).toBeNull();
+        expect(rest).toBe(plain);
+        expect(hasObservation(observation)).toBe(false);
+    });
+
+    it('stripObservation 去块保正文；hasObservation 判定有效性', () => {
+        expect(stripObservation(`${block}\n[normal] 正文`)).toBe('[normal] 正文');
+        expect(hasObservation({ time: '黄昏' })).toBe(true);
+        expect(hasObservation({})).toBe(false);
+        expect(hasObservation(null)).toBe(false);
+    });
+
+    // ── 鲁棒性：模型掉格式时的各种降级路径 ──
+    describe('掉格式容错', () => {
+        it('换括号风格【】/<>/[] 仍能严格提取', () => {
+            for (const [open, close] of [['【OBSERVE】', '【/OBSERVE】'], ['<观测>', '</观测>'], ['[OBSERVE]', '[/OBSERVE]']]) {
+                const t = `${open}\n时间｜清晨\n地点｜阳台\n状态｜没睡醒\n细节｜揉眼睛\n${close}\n[normal] 早。`;
+                const { observation, rest } = extractObservation(t, { lenient: true });
+                expect(observation, `${open} 应被识别`).not.toBeNull();
+                expect(observation!.place).toBe('阳台');
+                expect(rest).toBe('[normal] 早。');
+            }
+        });
+
+        it('丢了闭合定界符：靠回退层从开头连续字段行还原', () => {
+            const t = `${OBSERVE_OPEN}\n时间｜午后\n地点｜旧书店\n状态｜慵懒\n细节｜指尖划过书脊\n[normal] 你也来了。\n[happy] "找什么书？"`;
+            const { observation, rest } = extractObservation(t, { lenient: true });
+            expect(observation).not.toBeNull();
+            expect(observation!.time).toBe('午后');
+            expect(observation!.detail).toBe('指尖划过书脊');
+            expect(rest.startsWith('[normal] 你也来了。')).toBe(true);
+            expect(rest).not.toContain('时间｜');
+            expect(rest).not.toContain(OBSERVE_OPEN);
+        });
+
+        it('完全没定界符 + markdown 加粗 / 列表符 / 半角冒号：回退层照样吃', () => {
+            const t = `**时间**：黄昏\n- 地点: 天台\n状态｜风很大\n细节｜头发被吹乱\n\n[normal] 抓住栏杆。`;
+            const { observation, rest } = extractObservation(t, { lenient: true });
+            expect(observation).not.toBeNull();
+            expect(observation!.time).toBe('黄昏');
+            expect(observation!.place).toBe('天台');
+            expect(observation!.state).toBe('风很大');
+            expect(rest).toBe('[normal] 抓住栏杆。');
+        });
+
+        it('回退层未开启（lenient=false）时不强行解析，避免误伤', () => {
+            const t = `时间｜午后\n地点｜旧书店\n[normal] 正文。`;
+            const { observation, rest } = extractObservation(t);
+            expect(observation).toBeNull();
+            expect(rest).toBe(t);
+        });
+
+        it('只有 1 个字段不触发回退（防止正文里偶发的"状态：…"被误吞）', () => {
+            const t = `状态：他看起来在想事情\n[normal] 走神了。`;
+            const { observation, rest } = extractObservation(t, { lenient: true });
+            expect(observation).toBeNull();
+            expect(rest).toBe(t);
+        });
+
+        it('正文中部出现 field 样式的旁白不被回退层吞掉（只扫开头连续段）', () => {
+            const t = `[normal] 她开口。\n时间｜其实没人知道现在几点\n地点｜也无所谓`;
+            const { observation, rest } = extractObservation(t, { lenient: true });
+            expect(observation).toBeNull();
+            expect(rest).toBe(t);
+        });
     });
 });
 

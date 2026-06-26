@@ -3,7 +3,7 @@ import { CharacterProfile, UserProfile, Message, Emoji, EmojiCategory, GroupProf
 import { ContextBuilder } from './context';
 import { DB } from './db';
 import { formatLifeSimResetCardForContext } from './lifeSimChatCard';
-import { normalizeMessageContent, stickerNameFromUrl } from './messageFormat';
+import { normalizeMessageContent, stickerNameFromUrl, theaterWhenPhrase } from './messageFormat';
 import { computeCurrentListening, getCurrentSlot } from './charMusicSchedule';
 import { getCharLyricSnippet } from './charLyricCache';
 import { MusicCfg, loadMusicCfgStandalone } from '../context/MusicContext';
@@ -12,6 +12,7 @@ import { isScheduleFeatureOn } from './scheduleGenerator';
 import { VOICE_ACTING_GUIDE } from './minimaxTts';
 import { FISH_VOICE_ACTING_GUIDE } from './fishAudioTts';
 import { getTtsProvider } from './ttsProvider';
+import { resolveCharTimeZone, nowInTimeZone } from './timezone';
 
 // 语音格式指导按当前 TTS 服务商二选一：用 MiniMax 才注入 MiniMax 那套（含 <#秒#> 停顿标记），
 // 用鱼声则注入鱼声版（去掉 MiniMax 专属标记，改用标点 / 省略号控制停顿）。
@@ -56,19 +57,19 @@ function summarizeGroupMsgContent(m: Message): string {
 }
 
 export const ChatPrompts = {
-    // 格式化时间戳
-    formatDate: (ts: number) => {
-        const d = new Date(ts);
+    // 格式化时间戳（tz 非空时按该时区折算墙上时间，用于自定义时区角色）
+    formatDate: (ts: number, tz?: string) => {
+        const d = nowInTimeZone(tz, new Date(ts));
         return `${d.getFullYear()}-${(d.getMonth()+1).toString().padStart(2,'0')}-${d.getDate().toString().padStart(2,'0')} ${d.getHours().toString().padStart(2,'0')}:${d.getMinutes().toString().padStart(2,'0')}`;
     },
 
-    // 格式化时间差提示
-    getTimeGapHint: (lastMsg: Message | undefined, currentTimestamp: number): string => {
+    // 格式化时间差提示（tz 影响「深夜/清晨」判断，时差本身不变）
+    getTimeGapHint: (lastMsg: Message | undefined, currentTimestamp: number, tz?: string): string => {
         if (!lastMsg) return '';
         const diffMs = currentTimestamp - lastMsg.timestamp;
         const diffMins = Math.floor(diffMs / (1000 * 60));
         const diffHours = Math.floor(diffMs / (1000 * 60 * 60));
-        const currentHour = new Date(currentTimestamp).getHours();
+        const currentHour = nowInTimeZone(tz, new Date(currentTimestamp)).getHours();
         const isNight = currentHour >= 23 || currentHour <= 6;
         if (diffMins < 10) return ''; 
         if (diffMins < 60) return `[系统提示: 距离上一条消息: ${diffMins} 分钟。短暂的停顿。]`;
@@ -168,20 +169,23 @@ export const ChatPrompts = {
         // 原来是 7 段串行 await，总耗时 = 各段之和；现在取 max。
         const config = realtimeConfig || defaultRealtimeConfig;
         const today = new Date().toISOString().split('T')[0];
+        // 自定义时区：开启后「当前时间」按角色所在时区折算，并附时差提示（异国恋等场景）
+        const charTz = resolveCharTimeZone(char);
 
         // 1. 实时世界信息（天气/新闻/时间）
         const realtimePromise: Promise<string> = (async () => {
             try {
                 if (config.weatherEnabled || config.newsEnabled) {
-                    const realtimeContext = await RealtimeContextManager.buildFullContext(config);
+                    const realtimeContext = await RealtimeContextManager.buildFullContext(config, charTz);
                     return `\n${realtimeContext}\n`;
                 }
-                const time = RealtimeContextManager.getTimeContext();
+                // 基础当前时间 + 时差提示已由 ContextBuilder.buildCoreContext 统一注入（受 timeAwarenessEnabled
+                // 控制，按角色自定义时区折算）；这里只在关闭天气/新闻时补一条"今日特殊节日"，不再重复注入时间/时差，避免双份。
                 const specialDates = RealtimeContextManager.checkSpecialDates();
-                let s = `\n### 【当前时间】\n`;
-                s += `${time.dateStr} ${time.dayOfWeek} ${time.timeOfDay} ${time.timeStr}\n`;
-                if (specialDates.length > 0) s += `今日特殊: ${specialDates.join('、')}\n`;
-                return s;
+                if (specialDates.length > 0 && char.timeAwarenessEnabled !== false) {
+                    return `\n### 【今日特殊】\n${specialDates.join('、')}\n`;
+                }
+                return '';
             } catch (e) {
                 console.error('Failed to inject realtime context:', e);
                 return '';
@@ -786,7 +790,8 @@ ${userProfile.name} 给你反馈时，别当成约束，当成信任——ta 在
             effectiveHistory = effectiveHistory.filter(m => !processedExcludeIds.has(m.id));
         }
         const historySlice = effectiveHistory.slice(-limit);
-        
+        const charTz = resolveCharTimeZone(char);
+
         let timeGapHint = "";
         if (historySlice.length >= 2) {
             const currentMsg = historySlice[historySlice.length - 1];
@@ -800,13 +805,13 @@ ${userProfile.name} 给你反馈时，别当成约束，当成信任——ta 在
                 }
             }
             // 时间感知强化开关：默认开启（undefined 视为 true），显式关掉后不再注入「距离上次聊天多久」提示
-            if (lastRealMsg && currentMsg && char.timeAwarenessEnabled !== false) timeGapHint = ChatPrompts.getTimeGapHint(lastRealMsg, currentMsg.timestamp);
+            if (lastRealMsg && currentMsg && char.timeAwarenessEnabled !== false) timeGapHint = ChatPrompts.getTimeGapHint(lastRealMsg, currentMsg.timestamp, charTz);
         }
 
         return {
             apiMessages: historySlice.map((m, index) => {
                 let content: any = m.content;
-                const timeStr = `[${ChatPrompts.formatDate(m.timestamp)}]`;
+                const timeStr = `[${ChatPrompts.formatDate(m.timestamp, charTz)}]`;
                 const sourceTag = (() => {
                     const source = m.metadata?.source;
                     if (source === 'call') return '[通话]';
@@ -949,11 +954,29 @@ ${userProfile.name} 给你反馈时，别当成约束，当成信任——ta 在
                     content = `${timeStr}（这是你真实经历过的一段过往，由用户珍藏并交还给你——当成自己的亲身记忆来对待，它带来的情绪与体会都是真的，聊到时可自然提及，但不必逐字复述。）\n${body}`;
                 }
                 else if ((m.type as string) === 'phone_card') {
-                    // phone_card：用户翻看你手机时看到的内容（聊天/订单/外卖/朋友圈等数字痕迹）。
-                    // 框定为「你自己手机里确实存在的东西」，可自洽，但不必主动提起。
+                    // phone_card：你自己手机里的内容（聊天/订单/外卖/朋友圈/智能体等数字痕迹）。
+                    // 框定为「你刚看了眼自己手机、这是里面的隐私」——不暗示用户在偷看，且带一点"未必愿意被看到"的私密感。
                     const pc: any = m.metadata?.phoneCard || {};
                     const body = typeof m.content === 'string' ? m.content : '';
-                    content = `${timeStr}（这是用户翻看你手机时、你${pc.app || '手机'}里呈现的内容——属于你自己的数字痕迹，当成手机里确实有的东西即可，聊到再自然提及，不必主动说起。）\n${body}`;
+                    content = `${timeStr}（你刚刚看了眼手机，这是你${pc.app || '手机'}里的内容——这些是你自己的隐私，不一定愿意让其他人看到。当成手机里确实有的东西即可，聊到再自然提及，不必主动说起。）\n${body}`;
+                }
+                else if ((m.type as string) === 'theater_card') {
+                    // theater_card：用户「窥视」了你某个时段的行为小剧场。那段演出就是你当时真实在做的事，
+                    // 你自己当然记得。两态都只是「留痕」——不强制你立刻回应；区别只在 exposed：
+                    //   exposed=true  → 你发现 user 当时在旁边看着你（你知道 ta 看到了）；
+                    //   exposed=false → 你不知道 ta 看了（别表现得像被人盯着；这只是你自己那段时间的记忆）。
+                    const tMeta: any = m.metadata || {};
+                    const t: any = tMeta.theater || {};
+                    const uName = userProfile?.name || '用户';
+                    const exposed = tMeta.exposed !== false; // 缺省按已暴露处理（兼容旧卡片）
+                    const beat = Array.isArray(t.lines)
+                        ? t.lines.map((l: any) => `· ${typeof l?.text === 'string' ? l.text : ''}`).filter((s: string) => s.length > 2).join('\n')
+                        : '';
+                    // 窥视的是「哪个具体时间」——晚上看上午时不能说成"刚刚/刚才"，要落到具体日期+时段+时刻。
+                    const whenPhrase = theaterWhenPhrase(tMeta.date, tMeta.slotTime);
+                    content = exposed
+                        ? `${timeStr}（${uName} 把 ta 偷偷"窥视"到的、你${whenPhrase}「${tMeta.activity || '某个时段'}」时的样子发给了你——也就是说，${whenPhrase}那会儿，${uName} 一直在旁边悄悄观察你。下面就是 ta 看到的、你当时真实在做的事：）\n${beat}\n（你这下知道自己${whenPhrase}那会儿被看到了。可以在对话里自然地有所反应——害羞、好奇、嗔怪、或装作不在意都行，但别逐字复述上面的内容；也不必非得立刻提起。）`
+                        : `${timeStr}（这是你${whenPhrase}「${tMeta.activity || '某个时段'}」时真实在做的事，你自己当然记得——下面是当时的画面：）\n${beat}\n（注意：你**并不知道** ${uName} 看到过这一幕，别表现得像被人观察或偷看。这只是你自己那段时间的记忆，聊到相关话题时能自然对得上即可，不必主动提起。）`;
                 }
                 else if ((m.type as string) === 'html_card') {
                     // html_card：上下文里只塞纯文字摘要，剥离掉所有 HTML，省 token、不污染 LLM 思考

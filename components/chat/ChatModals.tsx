@@ -86,9 +86,6 @@ interface ChatModalsProps {
     onToggleHtmlMode?: () => void;
     htmlModeCustomPrompt?: string;
     setHtmlModeCustomPrompt?: (v: string) => void;
-    // 时间感知强化
-    timeAwarenessEnabled?: boolean;
-    onToggleTimeAwareness?: () => void;
     // Voice TTS
     chatVoiceEnabled?: boolean;
     onToggleChatVoice?: () => void;
@@ -107,6 +104,7 @@ interface ChatModalsProps {
     onScheduleReroll?: () => void;
     onScheduleCoverChange?: (dataUrl: string) => void;
     onScheduleStyleChange?: (style: 'lifestyle' | 'mindful') => void;
+    onPlayTheater?: (index: number) => void;
     // Schedule master toggle
     isScheduleFeatureEnabled?: boolean;
     onToggleScheduleFeature?: () => void;
@@ -143,11 +141,10 @@ const ChatModals: React.FC<ChatModalsProps> = ({
     translationEnabled, onToggleTranslation, translateSourceLang, translateTargetLang, onSetTranslateSourceLang, onSetTranslateLang,
     xhsEnabled, onToggleXhs,
     htmlModeEnabled, onToggleHtmlMode, htmlModeCustomPrompt, setHtmlModeCustomPrompt,
-    timeAwarenessEnabled, onToggleTimeAwareness,
     chatVoiceEnabled, onToggleChatVoice, chatVoiceLang, onSetChatVoiceLang,
     onGenerateVoice, voiceAvailable, onDownloadVoice, voiceDownloadable,
     scheduleData, isScheduleGenerating, onScheduleEdit, onScheduleDelete, onScheduleReroll, onScheduleCoverChange,
-    onScheduleStyleChange,
+    onScheduleStyleChange, onPlayTheater,
     isScheduleFeatureEnabled, onToggleScheduleFeature,
     isMemoryPalaceEnabled, isVectorizing, onForceVectorize,
     apiPresets, onAddApiPreset, onSaveEmotion, onClearBuffs,
@@ -430,25 +427,7 @@ const ChatModals: React.FC<ChatModalsProps> = ({
                          )}
                      </div>
 
-                     {/* 时间感知强化 */}
-                     <div className="pt-2 border-t border-slate-100">
-                         <div className="flex justify-between items-center cursor-pointer" onClick={onToggleTimeAwareness}>
-                             <div className="flex items-center gap-1.5 pointer-events-none">
-                                 <label className="text-xs font-bold text-slate-400 uppercase">时间感知强化</label>
-                                 <span
-                                     className="w-4 h-4 rounded-full bg-slate-200 text-slate-500 text-[10px] font-bold flex items-center justify-center pointer-events-auto cursor-help"
-                                     title="时间感知强化是「时间感知」的重要功能。开启时会向上下文注入「距离上次聊天已过去多久」的提示，强化角色的时间观念、让 ta 主动匹配现实世界时间。关掉后不再注入这组提示词，角色不会被强制强化时间观念、也不会被强制匹配现实世界——但具体会弱化多少，取决于 API（模型）自己的理解。"
-                                 >?</span>
-                             </div>
-                             <div className={`w-10 h-6 rounded-full p-1 transition-colors flex items-center ${timeAwarenessEnabled ? 'bg-primary' : 'bg-slate-200'}`}>
-                                 <div className={`w-4 h-4 bg-white rounded-full shadow-sm transition-transform ${timeAwarenessEnabled ? 'translate-x-4' : ''}`}></div>
-                             </div>
-                         </div>
-                         <p className="text-[10px] text-slate-400 mt-2 leading-relaxed">
-                             默认开启。开启时角色会强化时间观念、主动匹配现实世界时间。关掉后不再强化时间观念，也不会强制匹配现实世界；
-                             但具体弱化多少取决于 API 自己的理解。
-                         </p>
-                     </div>
+                     {/* 时间感知 / 自定义时区 / 线下时间感知 已统一迁移至「神经链接」角色设定页 */}
 
                      <div className="pt-2 border-t border-slate-100">
                          <button onClick={() => setModalType('history-manager')} className="w-full py-3 bg-slate-50 text-slate-600 font-bold rounded-2xl border border-slate-200 active:scale-95 transition-transform flex items-center justify-center gap-2">
@@ -851,7 +830,7 @@ const ChatModals: React.FC<ChatModalsProps> = ({
 
             {/* Schedule Modal */}
             <Modal
-                isOpen={modalType === 'schedule'} title={`${activeCharacter?.name || '角色'}の日程`} onClose={() => setModalType('none')}
+                isOpen={modalType === 'schedule'} title={`${activeCharacter?.name || '角色'}の日程/情绪`} onClose={() => setModalType('none')}
             >
                 <div className="max-h-[70vh] overflow-y-auto -mx-2 px-2">
                     {/* 总开关：关闭时不调副 API、不生成日程、不注入情绪 buff */}
@@ -927,6 +906,7 @@ const ChatModals: React.FC<ChatModalsProps> = ({
                                 onDelete={onScheduleDelete}
                                 onReroll={onScheduleReroll}
                                 onCoverImageChange={onScheduleCoverChange}
+                                onPlayTheater={onPlayTheater}
                                 isGenerating={isScheduleGenerating}
                             />
                             <p className="text-[10px] text-slate-400 text-center mt-3 leading-relaxed">

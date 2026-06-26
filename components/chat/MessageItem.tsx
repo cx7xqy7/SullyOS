@@ -1828,6 +1828,77 @@ const MessageItem = React.memo(({
     if (m.type === 'phone_card') {
         const pc: any = m.metadata?.phoneCard || {};
         const timeStr = new Date(m.timestamp).toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' });
+
+        // 智能体卡片（偷看到 TA 在玩 AI：助手 / 树洞 / 酒馆）
+        if (typeof pc.kind === 'string' && pc.kind.startsWith('ai_')) {
+            const svc = pc.service || pc.kind.replace('ai_', '');
+            const meta: Record<string, { label: string; accent: string; bg: string; glyph: string }> = {
+                assistant: { label: 'AI 助手', accent: '#34d399', bg: 'linear-gradient(150deg,#0e2a22 0%,#0b1f1a 55%,#0a1512 100%)', glyph: '🤖' },
+                claude: { label: '深度对话', accent: '#a78bfa', bg: 'linear-gradient(150deg,#1e1830 0%,#171228 55%,#100c1c 100%)', glyph: '✻' },
+                tavern: { label: '酒馆', accent: '#fb7185', bg: 'linear-gradient(150deg,#2a1620 0%,#1d1018 55%,#130a0f 100%)', glyph: '🎭' },
+            };
+            const mm = meta[svc] || meta.assistant;
+            const card = (
+                <div className="w-64">
+                    {/* 用原生 <details> 折叠：默认收起，点头部展开（无需 React state，避免在分支里用 hook） */}
+                    <details className="group relative rounded-2xl overflow-hidden border shadow-[0_8px_24px_rgba(10,12,20,0.5)] [&_summary]:list-none [&::-webkit-details-marker]:hidden"
+                        style={{ borderColor: `${mm.accent}44`, background: mm.bg }}>
+                        <div className="absolute -top-8 -right-6 w-28 h-28 rounded-full blur-2xl pointer-events-none" style={{ background: `radial-gradient(circle, ${mm.accent}55, transparent 70%)` }} />
+                        <summary className="relative px-3 pt-2.5 pb-2 flex items-center gap-2 border-b cursor-pointer select-none" style={{ borderColor: `${mm.accent}22` }}>
+                            <span className="w-6 h-6 rounded-lg flex items-center justify-center text-[13px] shrink-0" style={{ background: `${mm.accent}22` }}>{mm.glyph}</span>
+                            <div className="flex-1 min-w-0">
+                                <div className="text-[9px] tracking-[0.22em] font-bold uppercase" style={{ color: mm.accent }}>智能体 · {mm.label}</div>
+                                <div className="text-[12px] text-white/90 font-semibold truncate">{pc.serviceName ? `${pc.serviceName} · ${pc.title || ''}` : (pc.title || '一段对话')}</div>
+                            </div>
+                            <span className="shrink-0 text-[12px] font-bold leading-none transition-transform group-open:rotate-90" style={{ color: mm.accent }}>›</span>
+                        </summary>
+                        <div className="relative px-3 py-2.5">
+                            <p className="text-[12px] leading-[1.7] text-white/65 whitespace-pre-wrap max-h-40 overflow-y-auto no-scrollbar">{pc.detail || ''}</p>
+                        </div>
+                        <div className="relative px-3 py-1.5 border-t flex items-center justify-between" style={{ borderColor: `${mm.accent}1e` }}>
+                            <span className="text-[9px] italic text-white/35">TA 自己手机上的 AI · {timeStr}</span>
+                            <span className="text-[9px] font-bold tracking-wide" style={{ color: mm.accent }}>来自查手机</span>
+                        </div>
+                    </details>
+                </div>
+            );
+            return commonLayout(card);
+        }
+
+        // 人际关系变动卡片（用户在查手机里删/拉黑了角色的好友）
+        if (pc.kind === 'relationship') {
+            const isBlock = pc.action === 'blocked';
+            const rAccent = isBlock ? '#fca5a5' : '#fb7185';
+            const card = (
+                <div className="w-64">
+                    <div className="relative rounded-2xl overflow-hidden border shadow-[0_8px_24px_rgba(45,20,30,0.45)]"
+                        style={{ borderColor: 'rgba(251,113,133,0.3)', background: 'linear-gradient(160deg,#2a1620 0%,#1d1018 55%,#130a0f 100%)' }}>
+                        <div className="absolute -top-7 -right-5 w-24 h-24 rounded-full pointer-events-none" style={{ background: 'radial-gradient(circle,rgba(251,113,133,.3),transparent 70%)' }} />
+                        <div className="relative px-3 pt-2.5 pb-2 flex items-center gap-2 border-b" style={{ borderColor: 'rgba(251,113,133,0.18)' }}>
+                            <span className="text-sm leading-none">{isBlock ? '🚫' : '💔'}</span>
+                            <div className="flex-1 min-w-0">
+                                <div className="text-[9px] tracking-[0.25em] font-bold uppercase" style={{ color: rAccent }}>人际关系 · 关系变动</div>
+                                <div className="text-[12px] text-white/90 font-semibold truncate">{pc.title || '好友关系变动'}</div>
+                            </div>
+                            <span className="text-[9px] text-white/35">{timeStr}</span>
+                        </div>
+                        <div className="relative px-3 py-2.5">
+                            <p className="text-[12px] leading-[1.6] text-white/70 whitespace-pre-wrap">
+                                <span className="font-semibold" style={{ color: rAccent }}>{pc.by || '对方'}</span> 把你和
+                                <span className="font-semibold text-white/90">「{pc.contactName || '某人'}」</span>
+                                的好友关系{isBlock ? '拉黑' : '删除'}了。
+                            </p>
+                        </div>
+                        <div className="relative px-3 py-1.5 border-t flex items-center justify-between" style={{ borderColor: 'rgba(251,113,133,0.16)' }}>
+                            <span className="text-[9px] italic text-white/40">你察觉到是 TA 动的手</span>
+                            <span className="text-[9px] font-bold tracking-wide" style={{ color: rAccent }}>来自查手机</span>
+                        </div>
+                    </div>
+                </div>
+            );
+            return commonLayout(card);
+        }
+
         const accent = '#7dd3fc';
         const isChat = pc.kind === 'chat';
         const card = (
@@ -1857,6 +1928,71 @@ const MessageItem = React.memo(({
                     <div className="relative px-3 py-1.5 border-t flex items-center justify-between" style={{ borderColor: 'rgba(125,211,252,0.16)' }}>
                         <span className="text-[9px] italic text-white/35">{isChat ? 'TA 手机里的一段对话' : 'TA 手机里的一条记录'}</span>
                         <span className="text-[9px] font-bold tracking-wide" style={{ color: accent }}>来自查手机</span>
+                    </div>
+                </div>
+            </div>
+        );
+        return commonLayout(card);
+    }
+
+    if (m.type === 'theater_card') {
+        const tMeta: any = m.metadata || {};
+        const t: any = tMeta.theater || {};
+        const lines: any[] = Array.isArray(t.lines) ? t.lines : [];
+        const timeStr = new Date(m.timestamp).toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' });
+        const HUE = 262;
+        const accent = `hsl(${HUE},75%,72%)`;
+        const exposed = tMeta.exposed !== false; // 缺省按已暴露（兼容旧卡片）
+        // 由该时段起始时间，给每一拍合成「行为轨迹」时间戳（HH:MM:SS），与窥视面板一致。
+        const beatClock = (idx: number): string => {
+            const [h, mm] = String(tMeta.slotTime || '00:00').split(':').map((n: string) => parseInt(n, 10));
+            const base = (Number.isFinite(h) ? h : 0) * 3600 + (Number.isFinite(mm) ? mm : 0) * 60 + idx * 17;
+            const pad = (n: number) => String(n).padStart(2, '0');
+            return `${pad(Math.floor(base / 3600) % 24)}:${pad(Math.floor((base % 3600) / 60))}:${pad(base % 60)}`;
+        };
+        const card = (
+            <div className="w-64">
+                <div className="relative rounded-2xl overflow-hidden border shadow-[0_8px_28px_rgba(30,18,48,0.5)]"
+                    style={{ borderColor: `hsla(${HUE},55%,55%,0.32)`, background: `linear-gradient(160deg,hsl(${HUE},38%,20%) 0%,hsl(${HUE},42%,13%) 58%,#0f0a18 100%)` }}>
+                    <div className="absolute -top-7 -right-5 w-24 h-24 rounded-full pointer-events-none" style={{ background: `radial-gradient(circle,hsla(${HUE},70%,60%,.35),transparent 70%)` }} />
+                    <div className="absolute inset-0 pointer-events-none opacity-50" style={{ backgroundImage: 'radial-gradient(1px 1px at 22% 30%,rgba(200,180,255,.4),transparent),radial-gradient(1px 1px at 78% 18%,rgba(220,200,255,.35),transparent)' }} />
+                    {/* 头部：窥视回放 · LIVE */}
+                    <div className="relative px-3 pt-2.5 pb-2 flex items-center gap-2 border-b" style={{ borderColor: `hsla(${HUE},55%,55%,0.2)` }}>
+                        <span className="text-sm leading-none" style={{ color: accent, filter: `drop-shadow(0 1px 4px hsla(${HUE},70%,60%,.6))` }}>👁</span>
+                        <div className="flex-1 min-w-0">
+                            <div className="text-[8.5px] tracking-[0.22em] font-bold uppercase flex items-center gap-1.5" style={{ color: accent }}>
+                                <span>窥视回放 · {tMeta.slotTime || ''}</span>
+                                <span className="w-1 h-1 rounded-full bg-[#ff5a78] animate-pulse" />
+                            </div>
+                            <div className="text-[12px] text-white/90 font-semibold truncate">{tMeta.emoji ? `${tMeta.emoji} ` : ''}{tMeta.activity || '某个时段'}</div>
+                        </div>
+                        <span className="text-[9px] text-white/35">{timeStr}</span>
+                    </div>
+                    {/* 正文：逐拍回放（时间戳 + 氛围图标方块 + 文本） */}
+                    <div className="relative px-2.5 py-2.5 max-h-52 overflow-y-auto no-scrollbar space-y-1.5">
+                        {lines.length > 0 ? lines.map((l: any, i: number) => (
+                            <div key={i} className="flex items-stretch gap-1.5">
+                                <span className="flex-shrink-0 w-[42px] pt-1 text-right text-[8px] font-mono leading-tight whitespace-nowrap text-white/28 select-none">{beatClock(i)}</span>
+                                <span
+                                    className="flex-shrink-0 self-start mt-0.5 w-5 h-5 rounded-md flex items-center justify-center text-[11px]"
+                                    style={{ background: `hsl(${HUE},42%,30%)`, border: `1px solid hsla(${HUE},60%,58%,0.45)` }}
+                                >
+                                    {l?.emotion || '·'}
+                                </span>
+                                <p
+                                    className={`flex-1 min-w-0 text-[12.5px] leading-[1.55] whitespace-pre-wrap break-words ${/[「」“”"]/.test(l?.text || '') ? 'text-white font-medium' : 'text-white/90'}`}
+                                >{l?.text || ''}</p>
+                            </div>
+                        )) : (
+                            <p className="text-[11px] text-white/40 italic">（这段窥视没有内容）</p>
+                        )}
+                    </div>
+                    {/* 页脚 */}
+                    <div className="relative px-3 py-1.5 border-t flex items-center justify-between" style={{ borderColor: `hsla(${HUE},55%,55%,0.2)` }}>
+                        <span className="text-[9px] italic text-white/40">你偷看了 TA 的这一刻</span>
+                        <span className="text-[9px] font-bold tracking-wide" style={{ color: exposed ? accent : 'rgba(255,255,255,0.4)' }}>
+                            {exposed ? 'TA 已察觉' : 'TA 不知情'}
+                        </span>
                     </div>
                 </div>
             </div>

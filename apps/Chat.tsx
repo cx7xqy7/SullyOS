@@ -6,6 +6,8 @@ import { Message, MessageType, MemoryFragment, Emoji, EmojiCategory, DailySchedu
 import { processImage } from '../utils/file';
 import { safeResponseJson, extractContent } from '../utils/safeApi';
 import { generateDailyScheduleForChar, isScheduleFeatureOn } from '../utils/scheduleGenerator';
+import { generateSlotTheater } from '../utils/theaterGenerator';
+import TheaterPlayer from '../components/schedule/TheaterPlayer';
 import { formatMessageWithTime, normalizeMessageContent } from '../utils/messageFormat';
 import { getRoomLabel } from '../utils/memoryPalace/types';
 import { XhsMcpClient, extractNotesFromMcpData, normalizeNote } from '../utils/xhsMcpClient';
@@ -92,6 +94,9 @@ const Chat: React.FC = () => {
 
     const [modalType, setModalType] = useState<'none' | 'transfer' | 'emoji-import' | 'chat-settings' | 'message-options' | 'edit-message' | 'delete-emoji' | 'delete-category' | 'add-category' | 'history-manager' | 'archive-settings' | 'prompt-editor' | 'category-options' | 'category-visibility' | 'schedule' | 'chrome-css'>('none');
     const [scheduleData, setScheduleData] = useState<DailySchedule | null>(null);
+    // 小剧场（窥视演出）：正在播放的时段索引（null = 未打开），以及生成中标志
+    const [theaterSlotIdx, setTheaterSlotIdx] = useState<number | null>(null);
+    const [isTheaterGenerating, setIsTheaterGenerating] = useState(false);
     const [isScheduleGenerating, setIsScheduleGenerating] = useState(false);
     const [allHistoryMessages, setAllHistoryMessages] = useState<Message[]>([]);
     const [transferAmt, setTransferAmt] = useState('');
@@ -1382,6 +1387,67 @@ const Chat: React.FC = () => {
         await DB.saveDailySchedule(updated);
     };
 
+    // 小剧场：点某个时段的播放按钮。有缓存直接放；没有则先生成再放（forceRegenerate=重演）。
+    const runTheater = async (index: number, forceRegenerate: boolean) => {
+        if (!char || !scheduleData) return;
+        const slot = scheduleData.slots[index];
+        if (!slot) return;
+        // 命中缓存且非重演：直接打开，不烧 token
+        if (!forceRegenerate && slot.theater && slot.theater.lines.length > 0) {
+            setTheaterSlotIdx(index);
+            return;
+        }
+        setTheaterSlotIdx(index);
+        setIsTheaterGenerating(true);
+        try {
+            const updated = await generateSlotTheater(char, userProfile, scheduleData, index, apiConfig, forceRegenerate);
+            if (updated) {
+                setScheduleData(updated);
+            } else {
+                addToast('小剧场生成失败，稍后再试', 'error');
+                setTheaterSlotIdx(null);
+            }
+        } catch (e) {
+            console.error('[Theater] play failed:', e);
+            addToast('小剧场生成失败，稍后再试', 'error');
+            setTheaterSlotIdx(null);
+        } finally {
+            setIsTheaterGenerating(false);
+        }
+    };
+
+    const handlePlayTheater = (index: number) => { runTheater(index, false); };
+
+    // 把这段小剧场作为卡片发到聊天。两态都「留痕」——角色都知道自己当时干了啥，
+    // 区别只在 exposed：是否知道「user 看到了」。
+    //   exposed=true  → TA 会发现你在偷看
+    //   exposed=false → TA 不知道你看了（但照样记得自己干了啥）
+    // 发卡片本身不再自动触发对话——只留痕，下次聊天角色自然带着这份记忆。
+    const handleSendTheaterCard = async (index: number, exposed: boolean) => {
+        if (!char || !scheduleData) return;
+        const slot = scheduleData.slots[index];
+        if (!slot?.theater || slot.theater.lines.length === 0) return;
+        await DB.saveMessage({
+            charId: char.id,
+            role: 'user',
+            type: 'theater_card',
+            content: `${slot.startTime} · ${slot.activity}`,
+            metadata: {
+                theater: slot.theater,
+                slotTime: slot.startTime,
+                activity: slot.activity,
+                emoji: slot.emoji,
+                date: scheduleData.date,
+                exposed,
+            },
+        });
+        // 关掉播放器 + 日程 modal，回到聊天看到卡片（但不强行触发回复）
+        setTheaterSlotIdx(null);
+        setModalType('none');
+        await reloadMessages(visibleCountRef.current);
+        addToast(exposed ? '已让 TA 发现你在看 👀' : '已悄悄记下 · TA 不知道你看了 🙈', 'info');
+    };
+
     const generateDailySchedule = async (targetChar: typeof char, forceRegenerate: boolean = false) => {
         if (!targetChar || isScheduleGenerating) return;
         setIsScheduleGenerating(true);
@@ -2496,8 +2562,6 @@ const Chat: React.FC = () => {
                 onSetTranslateLang={(lang: string) => { setTranslateTargetLang(lang); localStorage.setItem(`chat_translate_lang_${activeCharacterId}`, lang); setShowingTargetIds(new Set()); }}
                 xhsEnabled={!!char.xhsEnabled}
                 onToggleXhs={() => updateCharacter(char.id, { xhsEnabled: !char.xhsEnabled })}
-                timeAwarenessEnabled={char.timeAwarenessEnabled !== false}
-                onToggleTimeAwareness={() => updateCharacter(char.id, { timeAwarenessEnabled: char.timeAwarenessEnabled === false })}
                 htmlModeEnabled={!!(char as any).htmlModeEnabled}
                 onToggleHtmlMode={() => updateCharacter(char.id, { htmlModeEnabled: !((char as any).htmlModeEnabled) } as any)}
                 htmlModeCustomPrompt={settingsHtmlModeCustomPrompt}
@@ -2517,6 +2581,7 @@ const Chat: React.FC = () => {
                 onScheduleReroll={() => generateDailySchedule(char, true)}
                 onScheduleCoverChange={handleScheduleCoverChange}
                 onScheduleStyleChange={handleScheduleStyleChange}
+                onPlayTheater={handlePlayTheater}
                 isScheduleFeatureEnabled={isScheduleFeatureOn(char)}
                 onToggleScheduleFeature={handleToggleScheduleFeature}
                 isMemoryPalaceEnabled={!!char.memoryPalaceEnabled}
@@ -2539,7 +2604,21 @@ const Chat: React.FC = () => {
                     addToast('情绪状态已清除', 'info');
                 }}
              />
-             
+
+             {/* 小剧场播放器：窥视某个日程时段的角色行为演出 */}
+             {theaterSlotIdx !== null && scheduleData && createPortal(
+                <TheaterPlayer
+                    character={char}
+                    slot={scheduleData.slots[theaterSlotIdx] || null}
+                    lines={scheduleData.slots[theaterSlotIdx]?.theater?.lines || null}
+                    isGenerating={isTheaterGenerating}
+                    onReplay={() => runTheater(theaterSlotIdx, true)}
+                    onSendCard={(exposed) => handleSendTheaterCard(theaterSlotIdx, exposed)}
+                    onClose={() => setTheaterSlotIdx(null)}
+                />,
+                document.body,
+             )}
+
              <ChatHeader
                 selectionMode={selectionMode}
                 selectedCount={selectedMsgIds.size + Array.from(selectedThinkingMsgIds).filter(id => !selectedMsgIds.has(id)).length}

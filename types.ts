@@ -464,6 +464,23 @@ export interface RoomNote {
     relatedMessageId?: number; 
 }
 
+/** 小剧场的一拍（one beat）：一行叙述 / 动作 / 台词，emotion 是该行氛围标记（emoji 或短词）。 */
+export interface TheaterLine {
+    emotion?: string;   // 该行的氛围标记，渲染成小标签（一个 emoji 或 2-4 字短词）
+    text: string;       // 这一拍的叙述 / 动作 / 台词
+}
+
+/**
+ * 小剧场（窥视演出）。挂在某个 ScheduleSlot 上：用户点该时段的播放按钮，
+ * 第三人称「上帝视角」生成角色在这个时间点的一小段行为演出，逐行播放。
+ * 生成一次即缓存进 slot，可反复重看，不重复烧 token。
+ */
+export interface SlotTheater {
+    lines: TheaterLine[];
+    mood?: string;        // 整段演出的氛围一句话（可选，展示用）
+    generatedAt: number;
+}
+
 export interface ScheduleSlot {
     startTime: string;    // "08:00"
     activity: string;     // "晨跑"
@@ -471,6 +488,7 @@ export interface ScheduleSlot {
     emoji?: string;       // "🏃"
     location?: string;    // "河边"
     innerThought?: string; // 该时段的内心独白，生成时由AI写好，运行时直接注入
+    theater?: SlotTheater; // 该时段的小剧场（窥视演出），按需生成并缓存
 }
 
 export interface DailySchedule {
@@ -587,6 +605,88 @@ export interface PhoneEvidence {
     timestamp: number;
     systemMessageId?: number;
     value?: string;
+    /** 人际关系系统：本条记录归属的联系人（phoneState.contacts 里的 id） */
+    contactId?: string;
+}
+
+/**
+ * 人际关系系统 · 联系人。
+ * 角色（机主）通讯录里的一个人，可能是神经链接里真实存在的角色（real），
+ * 也可能是纯按人设虚构的路人（npc）。
+ */
+export interface PhoneContact {
+    id: string;
+    name: string;
+    /** 身份/关系标签，如「辅导员」「中间人」 */
+    identity?: string;
+    /** 机主对此人的备注（用户/机主手写的「已确立事实」，对话里当真遵守，不被自动覆盖） */
+    note?: string;
+    /**
+     * 机主通过相处「逐渐了解到」的关于此人的认识——由对话里 [[了解:…]] 累积而来。
+     * 注意：这是机主的「印象/判断」，来源是对方在聊天里自己说的，**未必属实**（对方可能在编）。
+     * 与 note（事实）分开存、分开注入。
+     */
+    learned?: string;
+    avatar?: string;
+    /** 真假甄别结果：real=神经链接里真有这人；npc=纯虚构 */
+    kind: 'real' | 'npc';
+    /** kind==='real' 时绑定的真实角色 id（指向 characters 里的某个角色） */
+    linkedCharId?: string;
+    /** 机主对此人的好感度，-100..100（负=厌恶，可触发自动删友；正=亲近） */
+    affinity: number;
+    /** 关系状态 */
+    status: 'friend' | 'pending' | 'blocked' | 'deleted';
+    lastInteraction?: number;
+    createdAt: number;
+}
+
+/**
+ * 智能体 App · AI 服务种类。机主（被查手机的角色）自己也在玩 AI：
+ * - assistant：工具型 AI 助手（豆包/通义/ChatGPT 那种），问实用 & 尴尬问题。
+ * - claude：树洞型深度对话 AI（Claude 那种），说当面不会说的真心话。
+ * - tavern：酒馆 / SillyTavern 式 AI 角色扮演，自己捏卡跟 AI 对戏。
+ */
+export type AiServiceKind = 'assistant' | 'claude' | 'tavern';
+
+/** 智能体 App · 一段机主与 AI 的会话（被偷看到的记录） */
+export interface AiSession {
+    id: string;
+    service: AiServiceKind;
+    /** 服务/对象名：助手名(豆包) / 树洞名(Claude) / 酒馆卡片名 */
+    serviceName: string;
+    /** 会话标题（在聊什么） */
+    title: string;
+    /**
+     * 对话脚本，「我:/对方:」逐行（走 parseTranscript 无损解析）。
+     * assistant/claude：我=机主，对方=AI。
+     * tavern：我=机主(玩家)，对方=AI 扮演的卡片角色。
+     */
+    transcript: string;
+    /** tavern：关联的角色卡 id */
+    cardId?: string;
+    /** 长会话自动总结出的「前情提要」（参考 TRPG：超 100 条触发，把旧剧情压成小说梗概） */
+    summaries?: { id: string; content: string; createdAt: number }[];
+    /** 被折叠归档的旧原文（不删除，UI 可展开回看；总结后从 transcript 移到这里） */
+    archived?: string;
+    updatedAt: number;
+}
+
+/** 智能体 App · 机主在酒馆里建的角色卡 */
+export interface TavernCard {
+    id: string;
+    name: string;
+    /** 卡类型：character=单个角色卡；world=大型世界卡（跑团/修仙/西幻等） */
+    kind?: 'character' | 'world';
+    /** 角色人设 / 世界设定 */
+    persona: string;
+    /** 剧情背景 / 初始场景（酒馆的 scenario） */
+    scenario?: string;
+    emoji: string;
+    /** 是否照着用户（查手机的人）捏的——最偷窥感的一项 */
+    basedOnUser?: boolean;
+    /** 这张卡照着谁捏的（现实里 TA 在意的某个人的名字）：可能是用户，也可能是 TA 人设/羁绊里更深的某个人 */
+    basedOn?: string;
+    createdAt: number;
 }
 
 // 「人格模拟」演出运行时脚本模型（生成后驱动播放，也用于生活记录重播）
@@ -634,6 +734,73 @@ export interface PhoneSimLog {
     memoryText?: string;  // 演出可读梗概，作为回忆发给角色时用（让角色真的"知道"发生了什么）
     timestamp: number;
     script?: SimScript;   // 完整脚本快照——存在则「生活记录」可原样重播（旧记录没有，仅可发送）
+}
+
+// ============================================================
+//  梦境演出系统 (Dream Theater) — 偷看一场角色已经忘记的梦。
+//  与「人格模拟」演出不同：梦不写实、不连贯、允许中度幻觉与矛盾，
+//  以拼贴诗 / 电影字幕 / 碎片记忆的方式呈现，留白与沉默本身就是演出。
+// ============================================================
+export type DreamArchetype =
+    | 'sweet'      // 甜梦
+    | 'nightmare'  // 噩梦
+    | 'flower'     // 花之梦
+    | 'flying'     // 飞翔之梦
+    | 'falling'    // 坠落之梦
+    | 'starry'     // 星空之梦
+    | 'ocean'      // 海之梦
+    | 'childhood'  // 童年之梦
+    | 'anxiety'    // 焦虑之梦
+    | 'forgotten'  // 遗忘之梦
+    | 'prophetic'  // 预言之梦
+    | 'lucid'      // 清醒梦
+    | 'deepsleep'; // 隐藏 · 深眠（无梦，沉默即是奖励）
+
+// 一个梦境碎片 —— 不同 kind 决定它在屏幕上的排版与呈现方式
+export type DreamFragmentKind =
+    | 'line'       // 一句飘过的字幕
+    | 'word'       // 单字 / 单词，巨大、孤立
+    | 'silence'    // 留白 · 沉默（空行，长停顿）
+    | 'repeat'     // 同一个词反复
+    | 'dialogue'   // 极短的对话碎片
+    | 'stage'      // 舞台提示（[门在微笑]）
+    | 'list'       // 清单
+    | 'screenplay' // 剧本片段
+    | 'diary'      // 日记残页
+    | 'message'    // 发给无人的消息
+    | 'image';     // 象征性画面 + 配文
+
+export interface DreamFragment {
+    kind: DreamFragmentKind;
+    text?: string;          // line / word / stage / diary / message / repeat 的词
+    lines?: string[];       // dialogue / list / screenplay 的多行
+    count?: number;         // repeat 的重复次数
+    caption?: string;       // image 的配文
+    date?: string;          // diary / image 的模糊日期口径
+    tint?: string;          // image 的色调 hex
+    emphasis?: 'whisper' | 'normal' | 'loud' | 'fade'; // 视觉强弱
+    align?: 'left' | 'center' | 'right';
+    pace?: 1 | 2 | 3;       // 停留时长：1 普通 / 2 稍慢 / 3 漫长
+}
+
+export interface DreamScript {
+    archetype: DreamArchetype;
+    title?: string;         // 梦的标题（可以晦涩、诗意）
+    fragments: DreamFragment[];
+    afterglow?: string;     // 醒来时残留的感觉（留白，不解释）
+    buff?: { name?: string; label: string; emoji?: string; color?: string; intensity?: 1 | 2 | 3; description?: string };
+}
+
+// 一场梦的留存（角色不记得，仅作为用户偷看到的档案 · 「梦的残页」）
+export interface DreamLog {
+    id: string;
+    archetype: DreamArchetype;
+    title?: string;
+    afterglow?: string;
+    fragmentsCount: number;
+    buff?: { label: string; emoji?: string; color?: string };
+    timestamp: number;
+    script?: DreamScript;   // 完整快照 → 可原样重看
 }
 
 export interface Worldbook {
@@ -1391,6 +1558,63 @@ export interface DialogueItem {
     voiceEmotion?: string;
 }
 
+/**
+ * 「观测协议 OBSERVE」结构化观测数据：开启后由 LLM 在正文最前面输出一段
+ * ⟦OBSERVE⟧ 块，前端解析成这四个维度，渲染成可独立查看的全息 HUD。
+ * 所有字段可缺省——模型偶尔漏写某项时不应让面板崩掉。
+ */
+export interface DateObservation {
+    /** 时间：结合场景的当前时刻（不一定等于系统时间） */
+    time?: string;
+    /** 地点：角色此刻所在的具体地点 */
+    place?: string;
+    /** 状态：角色的身心状态 */
+    state?: string;
+    /** 细节：正在发生的动作 / 微小细节 */
+    detail?: string;
+    /** 用户追加的自定义维度的值，按 DateObserveCustomField.id 存 */
+    extra?: Record<string, string>;
+}
+
+/**
+ * 观测协议追加的自定义维度（在 时间/地点/状态/细节 之外另开一格）。
+ * label 同时是「线格式字段名」和「HUD 标签」——解析时按 label 匹配回该维度。
+ */
+export interface DateObserveCustomField {
+    id: string;        // 稳定 id，作为 DateObservation.extra 的 key
+    label: string;     // 字段名 / HUD 标签（如「天气」「穿着」）
+    hint?: string;     // 生成提示：这一格写什么
+    enabled?: boolean; // 默认 true
+}
+
+/** 观测协议 OBSERVE 的 HUD 视觉样式 id */
+export type DateObserveStyleId = 'hologram' | 'ink' | 'neon' | 'crystal' | 'terminal';
+
+/**
+ * 观测协议单个维度的自定义：显示标签 + 生成提示 + 是否启用。任一项留空即回落默认。
+ * 注意：自定义 label 只影响 HUD 展示——注入提示词时字段名始终用固定中文 key
+ * （时间/地点/状态/细节），保证解析稳定，用户改名不会让 extractObservation 失配。
+ */
+export interface DateObserveFieldConfig {
+    /** HUD 上显示的标签（仅展示用，不参与解析） */
+    label?: string;
+    /** 注入提示词：这个维度具体要生成什么内容 */
+    hint?: string;
+    /** 是否启用该维度（默认 true）。关掉则不注入提示、HUD 也不渲染该行。 */
+    enabled?: boolean;
+}
+
+/** 观测协议 OBSERVE 的 per-character 配置 */
+export interface DateObserveConfig {
+    enabled?: boolean;
+    /** HUD 视觉样式，默认 hologram */
+    style?: DateObserveStyleId;
+    /** 四个维度的标签 / 提示自定义；不填回落默认值 */
+    fields?: Partial<Record<keyof DateObservation, DateObserveFieldConfig>>;
+    /** 用户追加的自定义维度（在四个默认维度之外） */
+    custom?: DateObserveCustomField[];
+}
+
 export interface DateState {
     dialogueQueue: DialogueItem[];
     dialogueBatch: DialogueItem[];
@@ -1399,7 +1623,9 @@ export interface DateState {
     currentSprite: string;
     isNovelMode: boolean;
     timestamp: number;
-    peekStatus: string; 
+    peekStatus: string;
+    /** 当前批次解析出的观测数据（开了 OBSERVE 才有），用于恢复会话时回填 HUD */
+    observation?: DateObservation;
 }
 
 
@@ -1670,6 +1896,8 @@ export interface CharacterProfile {
   dateSkinSets?: SkinSet[];     // Multiple skin sets for portrait mode
   activeSkinSetId?: string;     // Currently active skin set ID
   dateStyleConfig?: DateStyleConfig; // 见面模式文风（写作风格 / 叙事人称 / 自定义补充）
+  /** 观测协议 OBSERVE：开启后每条回复注入「时间/地点/状态/细节」结构化观测，渲染成全息 HUD（样式/字段可自定义） */
+  dateObserve?: DateObserveConfig;
 
   savedDateState?: DateState;
   specialMomentRecords?: Record<string, SpecialMomentRecord>;
@@ -1704,7 +1932,16 @@ export interface CharacterProfile {
       simLogs?: PhoneSimLog[]; // 「生活记录」：人格模拟演出留存
       chatReadAt?: number;     // 上次打开 Messages 的时间戳，用于计算未读
       sendToChat?: boolean;    // 查手机生成的内容是否同步到私聊（默认 true）
+      contacts?: PhoneContact[]; // 人际关系系统：机主的通讯录
+      allowFictionalContacts?: boolean; // 是否允许生成虚构 NPC 联系人；false=只与神经链接里的真实角色来往（默认 true）
+      aiAgent?: {                 // 智能体 App：偷看到的「AI 也在玩 AI」记录
+          sessions: AiSession[];
+          cards?: TavernCard[];  // 酒馆里建的角色卡
+      };
   };
+
+  // 「梦的残页」：在小屋里偷看到的梦境演出留存（角色不记得，仅供用户回看）
+  dreamLogs?: DreamLog[];
 
   voiceProfile?: {
       provider?: 'minimax' | 'custom';
@@ -1730,6 +1967,16 @@ export interface CharacterProfile {
   // 让角色强化时间观念、主动匹配现实世界时间。关掉后不再注入这组提示词
   // （注意：历史消息本身仍带时间戳，关掉后弱化程度取决于模型自身理解）。
   timeAwarenessEnabled?: boolean;
+
+  // 自定义时区（异国恋 / 角色身处异国等场景）。与「时间感知强化」完全独立、可任意组合：
+  // 开启后，注入给该角色的「当前时间 / 消息时间戳 / 夜间判断」都按 customTimezone 折算，
+  // 让 ta 活在自己的本地时间里，并知道与用户之间存在时差。
+  customTimezoneEnabled?: boolean;
+  customTimezone?: string; // IANA 时区 id，如 'Asia/Tokyo'
+
+  // 线下时间感知（约会 / 见面 App）：开启（默认）时向见面 system prompt 注入「当前真实时间」。
+  // 关掉后见面场景不再注入时间，让剧情脱离现实时间线。独立开关。
+  dateTimeAwarenessEnabled?: boolean;
 
   // Chat & Date voice TTS settings
   chatVoiceEnabled?: boolean;
@@ -2386,7 +2633,7 @@ export interface GameSession {
     lastPlayedAt: number;
 }
 
-export type MessageType = 'text' | 'image' | 'emoji' | 'interaction' | 'transfer' | 'system' | 'social_card' | 'chat_forward' | 'xhs_card' | 'score_card' | 'music_card' | 'mcd_card' | 'luckin_card' | 'html_card' | 'news_card' | 'vr_card' | 'trpg_card' | 'world_card' | 'sim_card' | 'phone_card' | 'webpage_card';
+export type MessageType = 'text' | 'image' | 'emoji' | 'interaction' | 'transfer' | 'system' | 'social_card' | 'chat_forward' | 'xhs_card' | 'score_card' | 'music_card' | 'mcd_card' | 'luckin_card' | 'html_card' | 'news_card' | 'vr_card' | 'trpg_card' | 'world_card' | 'sim_card' | 'phone_card' | 'webpage_card' | 'theater_card';
 
 export interface Message {
     id: number;
@@ -2568,6 +2815,7 @@ export interface FullBackupData {
     lastActiveCharId?: string;
     eventNotifFlags?: Record<string, string>;  // sullyos_* 事件通知标记
     hotNewsSnapshots?: HotNewsSnapshot[];
+    dreamCollection?: Record<string, { firstAt: number; count: number }>;  // 梦境盲盒收藏册（os_dream_collection，账号级 localStorage）
 }
 
 // --- CLOUD BACKUP TYPES ---

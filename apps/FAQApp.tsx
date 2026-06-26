@@ -12,6 +12,7 @@ import {
     CHANGELOG_2026_06_05,
     CHANGELOG_2026_06_14,
     CHANGELOG_2026_06_21,
+    CHANGELOG_2026_06_26,
 } from '../components/UpdateNotificationEvent';
 
 const FAQ_DATA = [
@@ -97,6 +98,14 @@ interface ChangelogEntry {
 }
 
 const CHANGELOG_ENTRIES: ChangelogEntry[] = [
+    {
+        id: CHANGELOG_2026_06_26,
+        title: '2026 年 6 月 26 日 · 梦境盲盒',
+        subtitle: '小屋梦境系统（进屋刷新 · 集齐 13 款梦境盲盒）· 查手机联系人模式 + 智能体（char 的小手机）· 见面状态栏与设置前移 · 日程窥得更细 · 时间感知归位神经链接 · TTS 新增鱼生 API',
+        date: '2026-06-26',
+        src: 'changelogs/2026-6-26.html',
+        accent: 'from-indigo-100 to-violet-100 border-indigo-200',
+    },
     {
         id: CHANGELOG_2026_06_21,
         title: '2026 年 6 月 21 日 · 查手机翻新',
