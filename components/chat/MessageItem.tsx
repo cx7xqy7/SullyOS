@@ -908,8 +908,8 @@ const MessageItem = React.memo(({
     const longPressTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
     const startPos = useRef({ x: 0, y: 0 });
     const activePointerId = useRef<number | null>(null);
+    const activePointerType = useRef<string>('');
     const replyGestureActiveRef = useRef(false);
-    const replyGestureMovedRef = useRef(false);
     const replyReadyRef = useRef(false);
 
     const styleConfig = isUser ? activeTheme.user : activeTheme.ai;
@@ -926,7 +926,6 @@ const MessageItem = React.memo(({
 
     const resetReplyGesture = () => {
         replyGestureActiveRef.current = false;
-        replyGestureMovedRef.current = false;
         replyReadyRef.current = false;
         setIsReplyGestureActive(false);
         setIsReplyReady(false);
@@ -936,21 +935,17 @@ const MessageItem = React.memo(({
     const handlePointerDown = (e: React.PointerEvent<HTMLDivElement>) => {
         if (selectionMode || e.button !== 0) return;
         activePointerId.current = e.pointerId;
+        activePointerType.current = e.pointerType;
         startPos.current = { x: e.clientX, y: e.clientY };
-        replyGestureMovedRef.current = false;
         document.getSelection()?.removeAllRanges();
-        try { e.currentTarget.setPointerCapture(e.pointerId); } catch {}
 
         clearLongPressTimer();
         longPressTimer.current = setTimeout(() => {
             longPressTimer.current = null;
-            if (isSystem) {
-                onLongPress(m);
-                return;
-            }
-            document.getSelection()?.removeAllRanges();
-            replyGestureActiveRef.current = true;
-            setIsReplyGestureActive(true);
+            activePointerId.current = null;
+            activePointerType.current = '';
+            resetReplyGesture();
+            onLongPress(m);
         }, 600);
     };
 
@@ -958,10 +953,20 @@ const MessageItem = React.memo(({
         if (activePointerId.current !== e.pointerId) return;
         const diffX = e.clientX - startPos.current.x;
         const diffY = e.clientY - startPos.current.y;
+        const isTouchPointer = activePointerType.current !== 'mouse';
 
         if (!replyGestureActiveRef.current) {
-            if (Math.abs(diffX) > 10 || Math.abs(diffY) > 10) clearLongPressTimer();
-            return;
+            const startsReplySwipe = isTouchPointer
+                && !isSystem
+                && diffX < -8
+                && Math.abs(diffX) > Math.abs(diffY);
+            if (!startsReplySwipe) {
+                if (Math.abs(diffX) > 10 || Math.abs(diffY) > 10) clearLongPressTimer();
+                return;
+            }
+            clearLongPressTimer();
+            replyGestureActiveRef.current = true;
+            setIsReplyGestureActive(true);
         }
 
         if (Math.abs(diffY) > 24 && Math.abs(diffY) > Math.abs(diffX)) {
@@ -971,7 +976,6 @@ const MessageItem = React.memo(({
 
         e.preventDefault();
         document.getSelection()?.removeAllRanges();
-        replyGestureMovedRef.current = Math.abs(diffX) > 8;
         const nextOffset = Math.max(-72, Math.min(0, diffX));
         const nextReady = nextOffset <= -52;
         replyReadyRef.current = nextReady;
@@ -982,21 +986,19 @@ const MessageItem = React.memo(({
     const handlePointerEnd = (e: React.PointerEvent<HTMLDivElement>) => {
         if (activePointerId.current !== e.pointerId) return;
         clearLongPressTimer();
-        try { e.currentTarget.releasePointerCapture(e.pointerId); } catch {}
         activePointerId.current = null;
+        activePointerType.current = '';
 
-        const wasReplyGesture = replyGestureActiveRef.current;
-        const shouldReply = wasReplyGesture && replyReadyRef.current;
-        const shouldOpenMenu = wasReplyGesture && !replyGestureMovedRef.current;
+        const shouldReply = replyGestureActiveRef.current && replyReadyRef.current;
         resetReplyGesture();
 
         if (shouldReply) onReply(m);
-        else if (shouldOpenMenu) onLongPress(m);
     };
 
     const handlePointerCancel = () => {
         clearLongPressTimer();
         activePointerId.current = null;
+        activePointerType.current = '';
         resetReplyGesture();
     };
 
@@ -1015,7 +1017,12 @@ const MessageItem = React.memo(({
         onPointerCancel: handlePointerCancel,
         onContextMenu: (e: React.MouseEvent) => {
             e.preventDefault();
-            if (!selectionMode && e.button === 2) onLongPress(m);
+            if (selectionMode || replyGestureActiveRef.current) return;
+            clearLongPressTimer();
+            activePointerId.current = null;
+            activePointerType.current = '';
+            resetReplyGesture();
+            onLongPress(m);
         },
         onDragStart: (e: React.DragEvent) => e.preventDefault(),
         onClick: handleClick
