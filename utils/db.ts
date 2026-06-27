@@ -1751,6 +1751,13 @@ export const DB = {
       transaction.objectStore(STORE_VR_GUESTBOOK).put({ ...state, id: 'board', messages });
   },
 
+  clearVRGuestbook: async (): Promise<void> => {
+      const db = await openDB();
+      if (!db.objectStoreNames.contains(STORE_VR_GUESTBOOK)) return;
+      const transaction = db.transaction(STORE_VR_GUESTBOOK, 'readwrite');
+      transaction.objectStore(STORE_VR_GUESTBOOK).put({ id: 'board', messages: [], updatedAt: Date.now() });
+  },
+
   // --- 剧院·投稿剧本库 ---
   getVRScripts: async (): Promise<VRScript[]> => {
       const db = await openDB();
