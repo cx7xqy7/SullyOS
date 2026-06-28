@@ -946,12 +946,13 @@ ${AI_VENDOR_LORE}
             // 措辞同样是「你自己手机上的 AI 记录」，第二人称，不暗示用户在偷看。
             if (pushToChat) {
                 for (const sess of newSessions) {
-                    const preview = parseTranscript(sess.transcript).slice(0, 2)
-                        .map(t => `${t.isMe ? '我' : sess.serviceName}: ${t.text}`).join(' / ');
+                    // 放全文（卡片可折叠，进上下文也是完整记录），不再只取头两条
+                    const full = parseTranscript(sess.transcript)
+                        .map(t => `${t.isMe ? '我' : sess.serviceName}: ${t.text}`).join('\n');
                     await DB.saveMessage({
                         charId: targetChar.id, role: 'assistant', type: 'phone_card',
-                        content: `[你手机的智能体 App·${svcName}] 你和 AI 的对话「${sess.title}」：${preview}`,
-                        metadata: { phoneCard: { app: '智能体', kind: `ai_${service}`, service, serviceName: sess.serviceName, title: sess.title, detail: preview } },
+                        content: `[你手机的智能体 App·${svcName}] 你和 AI 的对话「${sess.title}」：\n${full}`,
+                        metadata: { phoneCard: { app: '智能体', kind: `ai_${service}`, service, serviceName: sess.serviceName, title: sess.title, detail: full } },
                     } as any);
                 }
             }
@@ -995,17 +996,18 @@ ${AI_VENDOR_LORE}
         }));
     };
 
-    // 后续对话也漏风：跟随全局 sendToChat，往私聊补一张痕迹卡（措辞第二人称，不暗示用户偷看）
-    const syncAiCardToChat = async (session: AiSession, lastLines: { isMe: boolean; text: string }[]) => {
+    // 漏风：跟随全局 sendToChat，往私聊补一张痕迹卡（措辞第二人称，不暗示用户偷看）。
+    // 传进来的 lines 原样放进去（调用方决定放整段还是这一轮），不再内部截断。
+    const syncAiCardToChat = async (session: AiSession, lines: { isMe: boolean; text: string }[]) => {
         if (!targetChar || targetChar.phoneState?.sendToChat === false) return;
         const svcName = AI_SERVICES.find(x => x.id === session.service)?.name || 'AI';
-        const preview = lastLines.slice(-2).map(t => `${t.isMe ? '我' : session.serviceName}: ${t.text.replace(/\n/g, ' ')}`).join(' / ');
+        const body = lines.map(t => `${t.isMe ? '我' : session.serviceName}: ${t.text}`).join('\n');
         const verb = session.service === 'tavern' ? '对戏' : '对话';
         try {
             await DB.saveMessage({
                 charId: targetChar.id, role: 'assistant', type: 'phone_card',
-                content: `[你手机的智能体 App·${svcName}] 你和「${session.serviceName}」的${verb}「${session.title}」又往下聊了：${preview}`,
-                metadata: { phoneCard: { app: '智能体', kind: `ai_${session.service}`, service: session.service, serviceName: session.serviceName, title: session.title, detail: preview } },
+                content: `[你手机的智能体 App·${svcName}] 你和「${session.serviceName}」的${verb}「${session.title}」：\n${body}`,
+                metadata: { phoneCard: { app: '智能体', kind: `ai_${session.service}`, service: session.service, serviceName: session.serviceName, title: session.title, detail: body } },
             } as any);
         } catch (e) { console.error('ai card sync failed', e); }
     };
@@ -1270,7 +1272,7 @@ ${olderText}
                     },
                 },
             }));
-            await syncAiCardToChat(sess, parseTranscript(sess.transcript).slice(0, 2));
+            await syncAiCardToChat(sess, parseTranscript(sess.transcript));
             setAiCardView(null);
             setSelectedAiSessionId(sess.id);
             setActiveAppId('ai_session');
