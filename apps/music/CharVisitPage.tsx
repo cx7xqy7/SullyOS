@@ -91,13 +91,16 @@ const CharVisitPage: React.FC<Props> = ({ charId, onBack, onOpenPlayer }) => {
   const lpStart = useRef<{ x: number; y: number } | null>(null);
   const clearLongPress = () => {
     if (lpTimer.current) { clearTimeout(lpTimer.current); lpTimer.current = null; }
+    lpStart.current = null;
   };
+  // 组件卸载时清掉可能还挂着的长按定时器，别让 setTimeout 落到已卸载的组件上
+  useEffect(() => () => { if (lpTimer.current) clearTimeout(lpTimer.current); }, []);
   const songPressHandlers = (pl: CharPlaylist, song: CharPlaylistSong) => ({
     onPointerDown: (e: React.PointerEvent) => {
+      lpFired.current = false; // 每次按下先清零：上次长按若没收到 click，别让 true 卡住吞掉这次点击
+      clearLongPress();        // 清掉上一次残留的定时器和起点坐标
       if (selectingPl) return; // 已在选择模式，不需要长按
-      lpFired.current = false;
       lpStart.current = { x: e.clientX, y: e.clientY };
-      clearLongPress();
       lpTimer.current = setTimeout(() => {
         lpFired.current = true;
         enterSelectMode(pl.id, song.id);
@@ -112,6 +115,7 @@ const CharVisitPage: React.FC<Props> = ({ charId, onBack, onOpenPlayer }) => {
     onPointerUp: clearLongPress,
     onPointerLeave: clearLongPress,
     onPointerCancel: clearLongPress,
+    onContextMenu: (e: React.MouseEvent) => { e.preventDefault(); }, // 移动端长按不弹系统菜单
   });
 
   const profile = char?.musicProfile;
@@ -556,7 +560,8 @@ const CharVisitPage: React.FC<Props> = ({ charId, onBack, onOpenPlayer }) => {
                                       playPlaylistSong(pl, s);
                                     }}
                                     {...songPressHandlers(pl, s)}
-                                    className="w-full flex items-center gap-2 py-1.5 px-2 rounded-lg hover:bg-white/40 transition-colors text-left"
+                                    className="w-full flex items-center gap-2 py-1.5 px-2 rounded-lg hover:bg-white/40 transition-colors text-left select-none"
+                                    style={{ WebkitTouchCallout: 'none' }}
                                   >
                                     {selecting ? (
                                       <span
